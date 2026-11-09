@@ -223,10 +223,30 @@ Messages are the newest page, oldest first. To poll, pass the `at` of the last m
 many different attendees have written in the room, counted over the whole room. A room nobody has written in returns
 an empty list.
 
-`author` is the name to show. If the person chose their handle (for example `ada`), it is that name. If the app
-generated the handle for the device (it starts with `cf_`), it is a label such as `guest-11ca1f` that is stable
-inside one room and different in every other room, so it cannot be followed between rooms. So a profile needs only
-a simple name: claim it as the `handle` in `PUT /me`.
+`author` is the name to show. If the person gave their profile a `display_name` (see `PUT /me`), it is that name.
+Otherwise it is a label such as `guest-11ca1f` that is stable inside one room and different in every other room, so it
+cannot be followed between rooms. The handle is never returned.
+
+### GET /rooms
+
+Requires the token. Query: `conference` (required), `window_minutes` (5-1440, default 60), `session_threshold`
+(2-10000, default 30), `limit` (1-50, default 20). Lists the rooms people have talked in during the window, busiest
+first:
+
+```json
+{
+  "conference": "cnh",
+  "window_minutes": 60,
+  "session_threshold": 30,
+  "rooms": [
+    {"room": "topic:ai inference + agentic", "kind": "topic", "name": "ai inference + agentic", "people": 34, "messages": 90, "latest": "2026-11-09T20:00:00.000Z", "wants_session": true}
+  ]
+}
+```
+
+`people` is the number of different attendees who wrote in the room during the window. `wants_session` turns true
+when that reaches `session_threshold`. It is the cue for an organizer: enough people care about this topic right now
+to give it a space and a host. Only counts are returned, so any attendee can see which rooms are filling up.
 
 There is no moderation or rate limit yet.
 

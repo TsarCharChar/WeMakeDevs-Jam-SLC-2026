@@ -2,14 +2,17 @@
 
 import hashlib
 import json
-from typing import Annotated
+from datetime import timedelta
+from typing import Annotated, Literal
 from uuid import uuid4
 
+from elastic_transport import TransportError
+from elasticsearch import ApiError
 from fastapi import APIRouter, Depends, Path, Query, Request, Response
 from pydantic import AwareDatetime, BaseModel, Field
 
-from backend.attendee.auth import Attendee, current_attendee, require_conference
-from backend.attendee.elastic import RETENTION, checked_search, elastic_errors, get_client, visible_in
+from backend.attendee.auth import Attendee, current_attendee, person_id, require_conference
+from backend.attendee.elastic import PEOPLE, RETENTION, checked_search, elastic_errors, get_client, visible_in
 from backend.attendee.models import StoredDate
 from backend.models import Identifier, Input
 from backend.vector_store import StoreError, utcnow
@@ -47,20 +50,55 @@ class RoomPage(BaseModel):
     messages: list[RoomMessage]
 
 
+class BusyRoom(BaseModel):
+    room: str
+    kind: Literal["topic", "talk"]
+    name: str
+    people: int
+    messages: int
+    latest: StoredDate
+    wants_session: bool
+
+
+class BusyRooms(BaseModel):
+    conference: str
+    window_minutes: int
+    session_threshold: int
+    rooms: list[BusyRoom]
+
+
 def room_key(room: str) -> str:
     # eBPF and ebpf are one topic, so they are one room.
     return room.strip().casefold()
 
 
-GENERATED_HANDLE = "cf_"
+MAX_NAME = 60
 
 
-def author_label(conference: str, room: str, handle: str) -> str:
-    # A name the person chose for their profile is shown as it is: that is what they picked it for.
-    if handle and not handle.startswith(GENERATED_HANDLE):
-        return handle
-    # A handle the app generated for the device is not a name. It becomes a label that is stable
-    # inside one room and different in every other, so it cannot be followed from room to room.
+def display_names(es, conference: str, handles: set[str]) -> dict[str, str]:
+    # The name a person gave their profile (PUT /me display_name). Names are a nicety: if they
+    # cannot be read, the chat still works and everyone shows as a guest.
+    ids = {person_id(conference, handle): handle for handle in handles if handle}
+    if not ids:
+        return {}
+    try:
+        data = es.mget(index=PEOPLE, ids=list(ids), source=["display_name"])
+    except (ApiError, TransportError):
+        return {}
+    names = {}
+    for doc in data.get("docs", []):
+        name = (doc.get("_source") or {}).get("display_name") if doc.get("found") else None
+        if isinstance(name, str) and name.strip() and doc.get("_id") in ids:
+            names[ids[doc["_id"]]] = name.strip()[:MAX_NAME]
+    return names
+
+
+def author_label(conference: str, room: str, handle: str, names: dict[str, str]) -> str:
+    # A person who gave their profile a name is shown by it: that is what the name is for.
+    if handle in names:
+        return names[handle]
+    # Otherwise a label that is stable inside one room and different in every other, so it cannot
+    # be followed from room to room. The handle is the profile key and is never returned.
     digest = hashlib.sha256(json.dumps([conference, room, handle]).encode()).hexdigest()
     return "guest-" + digest[:6]
 
@@ -126,10 +164,12 @@ def read_messages(
     if after:
         # A post filter narrows the page being read without narrowing the people count.
         search["post_filter"] = {"range": {"at": {"gt": after.isoformat()}}}
+    es = get_client(request)
     with elastic_errors():
-        data = checked_search(get_client(request), **search)
+        data = checked_search(es, **search)
     # The newest page is fetched, then shown oldest first, as a chat reads.
     hits = list(reversed(data.get("hits", {}).get("hits", [])))
+    names = display_names(es, attendee.conference, {hit["_source"].get("handle", "") for hit in hits})
     people = data.get("aggregations", {}).get("people", {}).get("value", 0)
     return {
         "room": key,
@@ -139,9 +179,68 @@ def read_messages(
                 "id": hit["_id"],
                 "text": hit["_source"].get("text", ""),
                 "at": hit["_source"].get("at"),
-                "author": author_label(attendee.conference, key, hit["_source"].get("handle", "")),
+                "author": author_label(attendee.conference, key, hit["_source"].get("handle", ""), names),
                 "mine": hit["_source"].get("handle") == attendee.handle,
             }
             for hit in hits
         ],
+    }
+
+
+@router.get("/rooms", response_model=BusyRooms)
+def busy_rooms(
+    attendee: Annotated[Attendee, Depends(current_attendee)],
+    conference: Identifier,
+    request: Request,
+    response: Response,
+    window_minutes: Annotated[int, Query(ge=5, le=1440)] = 60,
+    session_threshold: Annotated[int, Query(ge=2, le=10000)] = 30,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+):
+    """Rooms people are talking in right now, busiest first.
+
+    An organizer can watch this to see live demand: when enough different people are talking in a
+    room, `wants_session` turns true, which is the cue to offer that topic a space and a host.
+    Only counts are returned, so it is safe for any attendee to see which rooms are filling up.
+    """
+    require_conference(attendee, conference)
+    response.headers["Cache-Control"] = "no-store"
+    since = utcnow() - timedelta(minutes=window_minutes)
+    with elastic_errors():
+        data = checked_search(
+            get_client(request),
+            index=MESSAGES,
+            size=0,
+            track_total_hits=False,
+            query={"bool": {"filter": [*visible_in(attendee.conference), {"range": {"at": {"gte": since.isoformat()}}}]}},
+            aggs={
+                "rooms": {
+                    "terms": {"field": "room", "size": 200},
+                    "aggs": {"people": {"cardinality": {"field": "handle"}}, "latest": {"max": {"field": "at"}}},
+                }
+            },
+        )
+    rooms = []
+    for bucket in data.get("aggregations", {}).get("rooms", {}).get("buckets", []):
+        kind, _, name = str(bucket.get("key", "")).partition(":")
+        if kind not in ("topic", "talk") or not name:
+            continue
+        people = int(bucket.get("people", {}).get("value", 0) or 0)
+        rooms.append(
+            {
+                "room": bucket["key"],
+                "kind": kind,
+                "name": name,
+                "people": people,
+                "messages": int(bucket.get("doc_count", 0)),
+                "latest": bucket.get("latest", {}).get("value_as_string"),
+                "wants_session": people >= session_threshold,
+            }
+        )
+    rooms.sort(key=lambda room: (-room["people"], -room["messages"], room["room"]))
+    return {
+        "conference": attendee.conference,
+        "window_minutes": window_minutes,
+        "session_threshold": session_threshold,
+        "rooms": rooms[:limit],
     }

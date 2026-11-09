@@ -3,6 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from backend.attendee.auth import person_id
 from backend.config import Settings
 from backend.main import create_app
 from backend.tests.test_attendee_api import CONFERENCE, EMPTY, LEAK, Elastic, failure, register
@@ -16,6 +17,7 @@ class RoomElastic(Elastic):
     def __init__(self):
         super().__init__()
         self.messages = {}
+        self.client.mget.return_value = {"docs": []}
 
     def index(self, *, index, id, document, **guard):
         if index != "messages":
@@ -113,11 +115,41 @@ def test_read_returns_the_newest_page_oldest_first(client, elastic):
         ("m1", "Anyone going?", True),
         ("m2", "Yes, see you there", False),
     ]
-    # ada chose that name, so it is shown. The other handle was generated for a device, so it is not.
+    # Nobody here gave their profile a name, so both appear as guests and no handle is returned.
     mine, other = (m["author"] for m in body["messages"])
-    assert mine == "ada"
-    assert other.startswith("guest-") and len(other) == 12
-    assert GENERATED not in response.text and "handle" not in response.text
+    assert mine.startswith("guest-") and other.startswith("guest-") and len(other) == 12 and mine != other
+    assert GENERATED not in response.text and "ada" not in response.text and "handle" not in response.text
+
+
+def test_read_shows_the_name_a_person_gave_their_profile(client, elastic):
+    headers = register(client)
+    elastic.client.search.return_value = page(
+        hit("m2", GENERATED, "Yes, see you there", "2026-11-09T12:01:00Z"),
+        hit("m1", "ada", "Anyone going?", "2026-11-09T12:00:00Z"),
+        people=2,
+    )
+    elastic.client.mget.return_value = {
+        "docs": [
+            {"_id": person_id(CONFERENCE, "ada"), "found": True, "_source": {"display_name": "  Ada Lovelace  "}},
+            {"_id": person_id(CONFERENCE, GENERATED), "found": True, "_source": {}},
+            {"_id": "someone-else", "found": True, "_source": {"display_name": "Mallory"}},
+        ]
+    }
+    body = client.get(ROOM, params={"conference": CONFERENCE}, headers=headers).json()
+    assert [m["author"] for m in body["messages"]][0] == "Ada Lovelace"
+    assert body["messages"][1]["author"].startswith("guest-")
+    call = elastic.client.mget.call_args.kwargs
+    assert call["index"] == "people" and call["source"] == ["display_name"]
+    assert sorted(call["ids"]) == sorted([person_id(CONFERENCE, "ada"), person_id(CONFERENCE, GENERATED)])
+
+
+def test_read_still_works_when_names_cannot_be_read(client, elastic):
+    headers = register(client)
+    elastic.client.search.return_value = page(hit("m1", "ada", "hello", "2026-11-09T12:00:00Z"), people=1)
+    elastic.client.mget.side_effect = failure()
+    response = client.get(ROOM, params={"conference": CONFERENCE}, headers=headers)
+    assert response.status_code == 200
+    assert response.json()["messages"][0]["author"].startswith("guest-")
 
 
 def test_read_asks_only_for_this_room_and_counts_people_over_the_whole_room(client, elastic):
@@ -174,3 +206,80 @@ def test_room_failures_do_not_leak(client, elastic):
     write = client.post(ROOM, json=MESSAGE, headers=headers)
     assert read.status_code == 503 and write.status_code == 503
     assert LEAK not in read.text and LEAK not in write.text
+
+
+def bucket(room, messages, people, latest="2026-11-09T20:00:00.000Z"):
+    return {"key": room, "doc_count": messages, "people": {"value": people}, "latest": {"value": 1.0, "value_as_string": latest}}
+
+
+def busy(*buckets):
+    return EMPTY | {"aggregations": {"rooms": {"buckets": list(buckets)}}}
+
+
+def test_busy_rooms_require_authentication(client, elastic):
+    assert client.get("/rooms", params={"conference": CONFERENCE}).status_code == 401
+    assert elastic.calls == 0
+
+
+def test_busy_rooms_are_listed_busiest_first_with_a_session_cue(client, elastic):
+    headers = register(client)
+    elastic.client.search.return_value = busy(
+        bucket("topic:observability", 12, 3),
+        bucket("topic:ai inference + agentic", 90, 34),
+        bucket("talk:talk-42", 40, 3),
+        bucket("person:ada", 5, 5),
+    )
+    response = client.get("/rooms", params={"conference": CONFERENCE}, headers=headers)
+    body = response.json()
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    assert body["session_threshold"] == 30 and body["window_minutes"] == 60
+    assert [(room["room"], room["people"], room["messages"], room["wants_session"]) for room in body["rooms"]] == [
+        ("topic:ai inference + agentic", 34, 90, True),
+        ("talk:talk-42", 3, 40, False),
+        ("topic:observability", 3, 12, False),
+    ]
+    assert body["rooms"][0] | {"latest": None} == {
+        "room": "topic:ai inference + agentic",
+        "kind": "topic",
+        "name": "ai inference + agentic",
+        "people": 34,
+        "messages": 90,
+        "latest": None,
+        "wants_session": True,
+    }
+    assert "handle" not in response.text and "ada" not in response.text
+
+
+def test_busy_rooms_count_recent_messages_in_this_conference_only(client, elastic):
+    headers = register(client)
+    params = {"conference": CONFERENCE, "window_minutes": 30, "session_threshold": 2, "limit": 1}
+    elastic.client.search.return_value = busy(bucket("topic:wasm", 4, 2), bucket("topic:ebpf", 9, 1))
+    body = client.get("/rooms", params=params, headers=headers).json()
+    assert [room["room"] for room in body["rooms"]] == ["topic:wasm"] and body["rooms"][0]["wants_session"] is True
+    call = elastic.client.search.call_args.kwargs
+    assert call["index"] == "messages" and call["size"] == 0 and "source" not in call
+    filters = call["query"]["bool"]["filter"]
+    assert {"term": {"conference": CONFERENCE}} in filters
+    assert "gte" in filters[-1]["range"]["at"]
+    assert call["aggs"]["rooms"]["terms"] == {"field": "room", "size": 200}
+    assert call["aggs"]["rooms"]["aggs"]["people"] == {"cardinality": {"field": "handle"}}
+
+
+@pytest.mark.parametrize(
+    "params",
+    [{}, {"conference": CONFERENCE, "window_minutes": 1}, {"conference": CONFERENCE, "session_threshold": 1}, {"conference": CONFERENCE, "limit": 51}],
+)
+def test_busy_rooms_reject_invalid_input(client, elastic, params):
+    headers = register(client)
+    assert client.get("/rooms", params=params, headers=headers).status_code == 422
+    assert elastic.client.search.call_count == 0
+
+
+def test_busy_rooms_empty_and_failing(client, elastic):
+    headers = register(client)
+    assert client.get("/rooms", params={"conference": CONFERENCE}, headers=headers).json()["rooms"] == []
+    assert client.get("/rooms", params={"conference": "other"}, headers=headers).status_code == 403
+    elastic.client.search.side_effect = failure()
+    response = client.get("/rooms", params={"conference": CONFERENCE}, headers=headers)
+    assert response.status_code == 503 and LEAK not in response.text
