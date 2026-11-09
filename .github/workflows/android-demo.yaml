@@ -1,0 +1,85 @@
+name: android-demo-release
+
+on:
+  push:
+    branches: [main, feat/confellow-download-site]
+    paths:
+      - "lib/**"
+      - "android/**"
+      - "assets/data/**"
+      - "pubspec.yaml"
+      - "pubspec.lock"
+      - "scripts/download-model.ps1"
+      - ".github/workflows/android-demo.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-demo-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.9"
+          channel: stable
+          cache: true
+      - name: Download and verify the bundled speech model
+        shell: pwsh
+        run: ./scripts/download-model.ps1
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - name: Build ARM64 demo APK
+        # This repository's release build intentionally uses Android's debug
+        # signing key. This is a demo prerelease, never a production release.
+        run: flutter build apk --release --target-platform android-arm64 --build-number=${{ github.run_number }} --dart-define=ENABLE_LIVE_ATTENDEE_API=false
+      - name: Package and checksum
+        run: |
+          mkdir -p release-assets
+          cp build/app/outputs/flutter-apk/app-release.apk release-assets/confellow-demo.apk
+          cd release-assets
+          sha256sum confellow-demo.apk > confellow-demo.apk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-demo
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    environment:
+      name: android-demo
+      url: ${{ steps.release.outputs.url }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-demo
+          path: release-assets
+      - name: Publish demo prerelease
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_NUMBER: ${{ github.run_number }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          VERSION=$(sed -n 's/^version: \([^+]*\).*/\1/p' pubspec.yaml)
+          TAG="android-demo-${VERSION}-${RUN_NUMBER}"
+          gh release create "$TAG" release-assets/confellow-demo.apk release-assets/confellow-demo.apk.sha256 --target "$COMMIT_SHA" --prerelease --title "ConFellow demo ${VERSION} (build ${RUN_NUMBER})" --notes-file website/DEMO-RELEASE.md
+          echo "url=https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_OUTPUT"

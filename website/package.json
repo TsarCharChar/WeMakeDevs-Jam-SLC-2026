@@ -1,0 +1,1 @@
+{"name":"confellow-download-site","private":true,"type":"module","scripts":{"dev":"node serve.mjs","test":"node --test release.test.js"}}

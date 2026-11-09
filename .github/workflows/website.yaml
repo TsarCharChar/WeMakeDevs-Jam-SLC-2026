@@ -1,0 +1,52 @@
+name: download-website
+
+on:
+  push:
+    branches: [main, feat/confellow-download-site]
+    paths: ["website/**", ".github/workflows/website.yaml"]
+  pull_request:
+    paths: ["website/**", ".github/workflows/website.yaml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: download-website-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Test release discovery
+        run: node --test website/release.test.js
+      - name: Package the public site only
+        run: |
+          mkdir -p site-dist
+          cp website/index.html website/styles.css website/app.js website/release.js website/icon.svg site-dist/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site-dist
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy download website
+        id: deployment
+        uses: actions/deploy-pages@v4
