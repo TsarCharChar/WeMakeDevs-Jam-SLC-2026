@@ -3,9 +3,31 @@
 import asyncio
 import logging
 
+from elastic_transport import TransportError
+from elasticsearch import ApiError
+
+from backend.attendee.locations import purge_expired
+from backend.elastic_client import get_elasticsearch_client
 from backend.vector_store import StoreError
 
 logger = logging.getLogger(__name__)
+
+
+async def purge_locations_once(client):
+    try:
+        async with asyncio.timeout(30):
+            await asyncio.to_thread(purge_expired, client)
+    except (ApiError, TransportError, TimeoutError):
+        logger.warning("Location purge failed; retrying on the next interval")
+
+
+async def purge_locations_periodically():
+    client = get_elasticsearch_client()
+    if client is None:
+        return
+    while True:
+        await asyncio.sleep(60)
+        await purge_locations_once(client)
 
 
 async def expire_periodically(store):

@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 from backend.attendee import router as attendee_router
 from backend.config import Settings
-from backend.maintenance import expire_periodically
+from backend.maintenance import expire_periodically, purge_locations_periodically
 from backend.models import (
     ConversationSearch,
     ConversationWrite,
@@ -38,9 +38,13 @@ def create_app(settings: Settings | None = None, store: VectorStore | None = Non
                 cleanup = asyncio.create_task(expire_periodically(app.state.store))
             except ValueError:
                 app.state.configuration_error = True
+        location_purge = asyncio.create_task(purge_locations_periodically())
         try:
             yield
         finally:
+            location_purge.cancel()
+            with suppress(asyncio.CancelledError):
+                await location_purge
             if cleanup:
                 cleanup.cancel()
                 with suppress(asyncio.CancelledError):
