@@ -572,6 +572,32 @@ def test_losing_a_concurrent_update_keeps_the_winners_lock(elastic):
     assert records.count("room_lock") == 1
 
 
+def test_losing_a_concurrent_update_releases_its_different_slot_lock(elastic):
+    elastic.population(10)
+    elastic.room()
+    elastic.room("room-b", "Dynamic Room B")
+    elastic.discussing(5)
+    room_b = parse_room(elastic.documents[INDEX]["room-cnh-room-b"]["_source"])
+    assert room_b is not None
+    original = elastic.update
+
+    def rival_wins_elsewhere(*, index, id, doc, if_seq_no, if_primary_term, refresh):
+        if doc.get("status") == "scheduled":
+            elastic.client.update.side_effect = original
+            start, end = datetime.fromisoformat(doc["start"]), datetime.fromisoformat(doc["end"])
+            assert acquire_lock(elastic.client, "cnh", room_b, start, end, id, elastic.now) == "created"
+            winner_doc = {**doc, "room_id": room_b.room_id, "room": room_b.name}
+            original(index=index, id=id, doc=winner_doc, if_seq_no=if_seq_no, if_primary_term=1, refresh=refresh)
+            raise error(ConflictError, 409, {})
+        return original(index=index, id=id, doc=doc, if_seq_no=if_seq_no, if_primary_term=1, refresh=refresh)
+
+    elastic.client.update.side_effect = rival_wins_elsewhere
+    decision = decisions(run(elastic))[0]
+    assert decision["decision"] == "already_scheduled"
+    locks = [doc["_source"] for doc in elastic.documents[INDEX].values() if doc["_source"]["record_type"] == "room_lock"]
+    assert len(locks) == 1 and locks[0]["room_id"] == room_b.room_id
+
+
 def test_pending_proposal_is_scheduled_when_a_room_appears(elastic):
     elastic.population(10)
     elastic.discussing(5)

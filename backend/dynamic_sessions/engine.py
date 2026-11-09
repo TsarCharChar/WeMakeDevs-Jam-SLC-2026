@@ -13,6 +13,7 @@ from backend.dynamic_sessions.rooms import (
     candidates,
     load_rooms,
     lock_id,
+    parse_time,
 )
 from backend.dynamic_sessions.store import (
     INDEX,
@@ -147,11 +148,12 @@ def try_schedule(
             alerts = deliver_alerts(es, session_id, settings, now)
             return {"decision": "scheduled", "session_id": session_id, "alerts": alerts}
         current = get_record(es, session_id)
-        if current and current["_source"].get("status") == SCHEDULED:
-            # Another run confirmed this session, and the lock now belongs to it.
-            return {"decision": "already_scheduled", "session_id": session_id}
-        if lock == "created":
+        winner = current["_source"] if current else {}
+        same_slot = winner.get("room_id") == room.room_id and parse_time(winner.get("start")) == start
+        if lock == "created" and not same_slot:
             delete_record(es, lock_id(conference, room.room_id, start))
+        if winner.get("status") == SCHEDULED:
+            return {"decision": "already_scheduled", "session_id": session_id}
         return {"decision": "pending", "session_id": session_id, "reason": "concurrent_update"}
     reason = reason or NO_SLOT
     if session.get("pending_reason") != reason:
