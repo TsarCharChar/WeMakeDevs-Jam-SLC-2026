@@ -22,7 +22,7 @@ void main() {
     expect(find.text('Press to record\nconversation'), findsOneWidget);
     expect(find.text('One moment…'), findsNothing);
   });
-  testWidgets('Home presents both actions and opens typed-interest preview', (
+  testWidgets('Home presents both actions and opens search without sending', (
     tester,
   ) async {
     await tester.pumpWidget(const ConversationApp());
@@ -31,18 +31,15 @@ void main() {
     await tester.ensureVisible(search);
     await tester.tap(search);
     await tester.pumpAndSettle();
-    final button = find.widgetWithText(
-      FilledButton,
-      'Preview conversation search',
-    );
+    final button = find.widgetWithText(FilledButton, 'Search conversations');
     expect(tester.widget<FilledButton>(button).onPressed, isNull);
     await tester.enterText(find.byType(TextField), 'Flutter and local AI');
     await tester.pump();
-    await tester.ensureVisible(button);
-    await tester.tap(button);
-    await tester.pumpAndSettle();
-    expect(find.text('Your curiosity is ready.'), findsOneWidget);
-    expect(find.textContaining('No search has been sent yet.'), findsOneWidget);
+    expect(tester.widget<FilledButton>(button).onPressed, isNotNull);
+    expect(
+      find.textContaining('Search currently uses a demo conversation.'),
+      findsOneWidget,
+    );
   });
   testWidgets('Search remains usable on a narrow display with large text', (
     tester,
@@ -61,12 +58,18 @@ void main() {
         home: const SearchScreen(),
       ),
     );
+    await tester.scrollUntilVisible(
+      find.byType(TextField),
+      150,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), '   ');
     await tester.pump();
     expect(tester.takeException(), isNull);
     tester.testTextInput.hide();
     await tester.scrollUntilVisible(
-      find.text('Preview conversation search'),
+      find.text('Search conversations'),
       150,
       scrollable: find.byType(Scrollable).first,
     );
@@ -74,7 +77,7 @@ void main() {
     expect(
       tester
           .widget<FilledButton>(
-            find.widgetWithText(FilledButton, 'Preview conversation search'),
+            find.widgetWithText(FilledButton, 'Search conversations'),
           )
           .onPressed,
       isNull,

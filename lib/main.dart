@@ -3,6 +3,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'recording_controller.dart';
+import 'search_screen.dart';
+
+export 'search_screen.dart';
 
 void main() => runApp(const ConversationApp());
 
@@ -181,7 +184,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     ],
                     const SizedBox(height: 20),
                     const Text(
-                      'Only record with everyone’s permission.\nAudio stays on your phone. This preview sends nothing.',
+                      'Only record with everyone’s permission.\nRecordings stay on your phone. Search sends your typed interests to our server.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 11,
@@ -261,113 +264,6 @@ class BlobButton extends StatelessWidget {
               ),
             ],
           ),
-        ),
-      ),
-    ),
-  );
-}
-
-class SearchScreen extends StatefulWidget {
-  const SearchScreen({super.key});
-  @override
-  State<SearchScreen> createState() => _SearchScreenState();
-}
-
-class _SearchScreenState extends State<SearchScreen> {
-  final interests = TextEditingController();
-  bool submitted = false;
-  @override
-  void dispose() {
-    interests.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('Find your people'),
-      backgroundColor: Colors.transparent,
-    ),
-    body: Center(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 520),
-        child: ListView(
-          padding: const EdgeInsets.all(24),
-          children: [
-            const Text(
-              'What’s on\nyour mind?',
-              style: TextStyle(
-                fontSize: 38,
-                height: 1.1,
-                fontWeight: FontWeight.w600,
-                letterSpacing: -1.4,
-              ),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'Tell us what you’d love to talk about.',
-              style: TextStyle(fontSize: 16),
-            ),
-            const SizedBox(height: 24),
-            TextField(
-              controller: interests,
-              minLines: 3,
-              maxLines: 6,
-              maxLength: 500,
-              onChanged: (_) => setState(() {
-                submitted = false;
-              }),
-              decoration: InputDecoration(
-                labelText: 'Your interests',
-                hintText: 'e.g. on-device AI, Flutter, or creative tools',
-                filled: true,
-                fillColor: Colors.white,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(22),
-                  borderSide: BorderSide.none,
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: interests.text.trim().isEmpty
-                  ? null
-                  : () => setState(() => submitted = true),
-              icon: const Icon(Icons.search),
-              label: const Text('Preview conversation search'),
-            ),
-            const SizedBox(height: 24),
-            if (submitted)
-              const Card(
-                child: Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Column(
-                    children: [
-                      Icon(Icons.bubble_chart_outlined, size: 44),
-                      SizedBox(height: 16),
-                      Text(
-                        'Your curiosity is ready.',
-                        style: TextStyle(
-                          fontSize: 22,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      SizedBox(height: 12),
-                      Text(
-                        'Conversation matching is coming next. Once connected, the server will search conversations using your interests. No search has been sent yet.',
-                        textAlign: TextAlign.center,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            const SizedBox(height: 16),
-            const Text(
-              'SEARCH PREVIEW · SERVER NOT CONNECTED',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 10, letterSpacing: 1.2),
-            ),
-          ],
         ),
       ),
     ),
