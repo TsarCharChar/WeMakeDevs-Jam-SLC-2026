@@ -6,26 +6,72 @@ import 'package:http/http.dart' as http;
 class Conversation {
   const Conversation({
     required this.id,
-    required this.transcript,
+    this.sharedText,
+    this.topics = const [],
+    this.why,
     this.conference,
+    this.shared = false,
   });
 
   final String id;
-  final String transcript;
+
+  /// Only populated when the note was explicitly shared or comes from the
+  /// backend's synthetic `__setup_smoke__` demo document.
+  final String? sharedText;
+  final List<String> topics;
+  final String? why;
   final String? conference;
+  final bool shared;
+
+  bool get isDemo => conference == '__setup_smoke__';
 
   factory Conversation.fromJson(Object? json) {
-    if (json case {'id': String id, 'transcript': String transcript}) {
-      final conference = (json as Map)['conference'];
-      if (conference == null || conference is String) {
-        return Conversation(
-          id: id,
-          transcript: transcript,
-          conference: conference as String?,
-        );
+    if (json case {'id': String id} when id.isNotEmpty) {
+      final conference = json['conference'];
+      if (conference != null && conference is! String) {
+        throw const FormatException('Invalid note conference');
       }
+      final sharedFlag = json['shared'];
+      if (sharedFlag != null && sharedFlag is! bool) {
+        throw const FormatException('Invalid shared flag');
+      }
+      final rawText = json['transcript'] ?? json['shared_text'];
+      if (rawText != null && rawText is! String) {
+        throw const FormatException('Invalid note text');
+      }
+      final rawWhy = json['why'];
+      if (rawWhy != null && rawWhy is! String) {
+        throw const FormatException('Invalid match reason');
+      }
+      final rawTopics = json['topics'];
+      final topics = <String>[];
+      if (rawTopics != null) {
+        if (rawTopics is! List) {
+          throw const FormatException('Invalid note topics');
+        }
+        for (final item in rawTopics) {
+          if (item is! String) {
+            throw const FormatException('Invalid note topic');
+          }
+          final trimmed = item.trim();
+          if (trimmed.isNotEmpty) topics.add(trimmed);
+        }
+      }
+      if (rawText == null && rawTopics == null && rawWhy == null) {
+        throw const FormatException('Missing note fields');
+      }
+      final isDemo = conference == '__setup_smoke__';
+      final isShared = sharedFlag == true;
+      return Conversation(
+        id: id,
+        conference: conference as String?,
+        shared: isShared,
+        sharedText: (isShared || isDemo) ? rawText as String? : null,
+        topics: List.unmodifiable(topics),
+        why: rawWhy as String?,
+      );
     }
-    throw const FormatException('Invalid conversation response');
+    throw const FormatException('Invalid note response');
   }
 }
 
@@ -82,7 +128,7 @@ class ConversationApi {
           401 || 403 => 'Search access is unavailable. Please try again later.',
           422 => 'Enter between 2 and 120 characters.',
           429 => 'Too many searches. Please wait a moment and try again.',
-          _ => 'Conversation search is unavailable. Please try again.',
+          _ => 'Note search is unavailable. Please try again.',
         });
       }
       final body = jsonDecode(utf8.decode(response.bodyBytes));

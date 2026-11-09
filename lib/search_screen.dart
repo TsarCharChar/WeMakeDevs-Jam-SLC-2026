@@ -53,7 +53,7 @@ class _SearchScreenState extends State<SearchScreen> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: const Text('Find your people'),
+      title: const Text('Find my wavelength'),
       backgroundColor: Colors.transparent,
     ),
     body: Center(
@@ -73,12 +73,12 @@ class _SearchScreenState extends State<SearchScreen> {
             ),
             const SizedBox(height: 16),
             const Text(
-              'Tell us what you’d love to talk about.',
+              'Tell us what you’d love to explore.',
               style: TextStyle(fontSize: 16),
             ),
             const SizedBox(height: 16),
             const Text(
-              'Search currently uses a demo conversation. Attendee matching is coming soon.',
+              'Search currently queries a synthetic demo note. Attendee topic matching is coming next.',
             ),
             const SizedBox(height: 24),
             TextField(
@@ -93,7 +93,7 @@ class _SearchScreenState extends State<SearchScreen> {
               }),
               decoration: InputDecoration(
                 labelText: 'Your interests',
-                hintText: 'e.g. on-device AI, Flutter, or creative tools',
+                hintText: 'e.g. on-device AI, eBPF, or platform engineering',
                 helperText: 'Use 2–120 characters.',
                 filled: true,
                 fillColor: Colors.white,
@@ -118,7 +118,7 @@ class _SearchScreenState extends State<SearchScreen> {
                     ? 'Searching…'
                     : error != null
                     ? 'Retry search'
-                    : 'Search conversations',
+                    : 'Search notes',
               ),
             ),
             const SizedBox(height: 16),
@@ -133,7 +133,7 @@ class _SearchScreenState extends State<SearchScreen> {
               Semantics(
                 liveRegion: true,
                 child: const Text(
-                  'No conversations found. Try different interests.',
+                  'No matching notes found. Try different interests.',
                 ),
               ),
             if (results != null && results!.isNotEmpty) ...[
@@ -145,7 +145,7 @@ class _SearchScreenState extends State<SearchScreen> {
                 ),
               ),
               const SizedBox(height: 12),
-              for (final conversation in results!)
+              for (final note in results!)
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(20),
@@ -153,13 +153,37 @@ class _SearchScreenState extends State<SearchScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          conversation.conference == '__setup_smoke__'
-                              ? 'Demo conversation'
-                              : 'Conversation',
+                          note.isDemo
+                              ? 'Demo note'
+                              : note.shared
+                              ? 'Shared note'
+                              : 'Matched note',
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
-                        const SizedBox(height: 8),
-                        SelectableText(conversation.transcript),
+                        if (note.topics.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 6,
+                            children: [
+                              for (final topic in note.topics)
+                                Chip(label: Text(topic)),
+                            ],
+                          ),
+                        ],
+                        if (note.why != null && note.why!.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Text(note.why!),
+                        ],
+                        if (note.sharedText != null &&
+                            note.sharedText!.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          SelectableText(note.sharedText!),
+                        ] else if (note.topics.isEmpty &&
+                            (note.why == null || note.why!.isEmpty)) ...[
+                          const SizedBox(height: 8),
+                          const Text('On your wavelength · note text kept private'),
+                        ],
                       ],
                     ),
                   ),

@@ -13,7 +13,7 @@ class ConversationApp extends StatelessWidget {
   const ConversationApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'Conversation Garden',
+    title: 'ConFellow',
     debugShowCheckedModeBanner: false,
     theme: ThemeData(
       useMaterial3: true,
@@ -71,10 +71,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   children: [
                     const Row(
                       children: [
-                        Icon(Icons.spa_outlined, size: 23),
+                        Icon(Icons.graphic_eq_rounded, size: 23),
                         SizedBox(width: 8),
                         Text(
-                          'CONVERSATION GARDEN',
+                          'CONFELLOW',
                           style: TextStyle(
                             fontSize: 11,
                             fontWeight: FontWeight.w700,
@@ -85,7 +85,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: 28),
                     const Text(
-                      'Good ideas\ngrow together.',
+                      'Good ideas\nfind each other.',
                       style: TextStyle(
                         fontSize: 38,
                         height: 1.08,
@@ -95,7 +95,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     ),
                     const SizedBox(height: 12),
                     const Text(
-                      'Share a thought. Find your people.',
+                      'Capture a note. Tune into your people.',
                       style: TextStyle(color: Color(0xFF69716A), fontSize: 16),
                     ),
                     const SizedBox(height: 26),
@@ -110,12 +110,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           ? 'One moment…'
                           : active
                           ? 'Press to stop\nrecording'
-                          : 'Press to record\nconversation',
+                          : 'Press to record\na note',
                       subtitle: recording.busy
-                          ? 'Preparing your conversation'
+                          ? 'Preparing your note'
                           : active
                           ? 'Listening · up to 3 minutes'
-                          : 'Let your ideas take root',
+                          : 'Speak your own thought',
                       busy: recording.busy,
                       onTap: recording.busy
                           ? null
@@ -134,7 +134,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     BlobButton(
                       color: const Color(0xFFD8D5ED),
                       icon: Icons.travel_explore,
-                      title: 'Find me\nconversations',
+                      title: 'Find my\nwavelength',
                       subtitle: 'Follow what sparks your curiosity',
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute<void>(
@@ -164,7 +164,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              active ? 'LIVE TRANSCRIPT' : 'YOUR CONVERSATION',
+                              active ? 'LIVE TRANSCRIPT' : 'YOUR NOTE',
                               style: const TextStyle(
                                 fontSize: 11,
                                 letterSpacing: 1.6,
@@ -184,7 +184,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     ],
                     const SizedBox(height: 20),
                     const Text(
-                      'Only record with everyone’s permission.\nRecordings stay on your phone. Search sends your typed interests to our server.',
+                      'Speak your own notes · Audio stays on your phone.\nSearching sends your typed interests to our server.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 11,

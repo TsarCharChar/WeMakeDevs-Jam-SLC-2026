@@ -18,7 +18,7 @@ class RecordingController extends ChangeNotifier {
   Timer? _limit;
   bool _disposed = false, _cancelled = false;
   RecordingPhase phase = RecordingPhase.idle;
-  String transcript = '', status = 'Your next good conversation starts here.';
+  String transcript = '', status = 'Ready to capture your next note.';
   String? error;
   bool get busy =>
       phase == RecordingPhase.preparing || phase == RecordingPhase.stopping;
@@ -150,7 +150,7 @@ class RecordingController extends ChangeNotifier {
     phase = RecordingPhase.idle;
     status = transcript.isEmpty
         ? 'No speech detected. Try again.'
-        : 'Conversation captured · kept for this session';
+        : 'Note captured · kept for this session';
     update();
   }
 

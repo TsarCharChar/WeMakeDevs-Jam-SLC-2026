@@ -10,14 +10,14 @@ import 'package:http/testing.dart';
 Future<void> submit(WidgetTester tester) async {
   await tester.enterText(find.byType(TextField), 'Kubernetes');
   await tester.pump();
-  final button = find.widgetWithText(FilledButton, 'Search conversations');
+  final button = find.widgetWithText(FilledButton, 'Search notes');
   await tester.ensureVisible(button);
   await tester.tap(button);
   await tester.pump();
 }
 
 void main() {
-  testWidgets('submits once, shows loading, then renders returned transcript', (
+  testWidgets('submits once, shows loading, then renders demo note', (
     tester,
   ) async {
     final pending = Completer<http.Response>();
@@ -50,8 +50,34 @@ void main() {
       200,
       scrollable: find.byType(Scrollable).first,
     );
-    expect(find.text('Demo conversation'), findsOneWidget);
+    expect(find.text('Demo note'), findsOneWidget);
     expect(find.text('Container scaling'), findsOneWidget);
+  });
+
+  testWidgets('hides unshared attendee note text and shows matched topics only', (
+    tester,
+  ) async {
+    final api = ConversationApi(
+      client: MockClient(
+        (_) async => http.Response(
+          '{"conversations":[{"id":"n1","conference":"cnh","transcript":"private raw note","topics":["eBPF","Security"],"why":"Matches your eBPF interest"}]}',
+          200,
+        ),
+      ),
+    );
+    addTearDown(api.close);
+    await tester.pumpWidget(MaterialApp(home: SearchScreen(api: api)));
+    await submit(tester);
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Matched note'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('eBPF'), findsOneWidget);
+    expect(find.text('Security'), findsOneWidget);
+    expect(find.text('Matches your eBPF interest'), findsOneWidget);
+    expect(find.text('private raw note'), findsNothing);
   });
 
   testWidgets('error allows retry and empty response has a distinct state', (
@@ -76,7 +102,7 @@ void main() {
     await tester.tap(retry);
     await tester.pumpAndSettle();
     expect(calls, 2);
-    expect(find.textContaining('No conversations found'), findsOneWidget);
+    expect(find.textContaining('No matching notes found'), findsOneWidget);
   });
 
   testWidgets('late response after leaving the screen is ignored', (
