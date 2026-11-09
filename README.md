@@ -32,13 +32,15 @@ iOS requires macOS/Xcode and deployment target 15.6 or newer. iOS builds have no
 
 The top blob starts microphone capture and on-device Whisper transcription; tap again to stop. Permission denial, model preparation, recording, and finalization have visible states. Recording stops after three minutes or when the app goes into the background. Live transcript events replace the full displayed text, rather than appending duplicate partial results. English is the current transcription language.
 
-The bottom blob opens a typed-interest search preview. It does not return invented matches or send requests. No server is connected. Audio is streamed in memory; the transcript is kept only in the current app session. Starting another recording clears the previous transcript. Only record with participants' permission.
+The bottom blob opens typed-interest search. Submitting 2–120 characters calls `GET /querysession?topic=...` on `https://grindset.cnh.radarhq.io`. The screen shows loading, results, no matches, or a retryable error. The backend currently searches only a synthetic demo conversation; attendee matching is not implemented. Audio is streamed in memory; recorded transcripts remain in the current app session and are not uploaded. Starting another recording clears the previous transcript. Only record with participants' permission.
+
+Override the backend origin for another HTTPS environment with `flutter run --dart-define=API_BASE_URL=https://your-api.example`. Use an HTTPS origin without a path, query, or credentials. Never put an Elasticsearch API key in a Flutter build. Search uses the backend response `{"conversations":[{"id":"...","conference":"...","transcript":"..."}]}`; the backend owns embedding and access control. Native Android includes the Internet permission; iOS uses HTTPS without transport-security exceptions.
 
 The model is bundled as a Flutter asset and copied into app-private storage on first recording. This adds roughly 574 MB to the app assets and another 574 MB to app storage; first-use copying and inference require additional RAM. Real-time performance with this large model must be measured on target phones.
 
-Validation commands: `flutter analyze` and `flutter test`. Widget tests cover denied microphone permission recovery, the home actions, search navigation, empty-interest validation, preview behavior, and narrow layouts with enlarged text. They do not validate native speech recognition.
+Validation commands: `flutter analyze` and `flutter test`. API and widget tests cover query encoding, validation, response parsing, network failures, loading, duplicate-submit prevention, results, empty results, retries, leaving during a request, microphone permission recovery, and narrow layouts with enlarged text. They do not validate native speech recognition.
 
-Current verification: static analysis and all three widget tests pass. The first Android debug build stopped because the license for Whisper's NDK `29.0.13113456` has not been accepted. In Android Studio, open SDK Manager > SDK Tools, enable Show Package Details, and install that NDK version after reviewing its license. Then retry the build. No APK or on-device transcription run has been verified yet.
+The first Android debug build stopped because the license for Whisper's NDK `29.0.13113456` has not been accepted. In Android Studio, open SDK Manager > SDK Tools, enable Show Package Details, and install that NDK version after reviewing its license. Then retry the build. No APK or on-device transcription run has been verified yet.
 
 ## Download the offline speech model
 
