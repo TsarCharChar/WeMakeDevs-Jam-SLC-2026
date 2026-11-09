@@ -9,6 +9,12 @@ Base URL: `https://grindset.cnh.radarhq.io`. All examples are synthetic.
 | `GET /graph` | Attendee token | Topic nodes and edges |
 | `GET /search` | Attendee token | Search talks and moments |
 | `GET /feed` | Attendee token | The attendee's own alerts |
+| `PUT /transcripts/{stream_id}/segments/{sequence}` | Attendee token | Save a partial or final private transcript segment |
+| `GET /transcripts/{stream_id}/segments/{sequence}` | Attendee token | Read the latest saved segment revision |
+| `GET /transcripts/{stream_id}` | Attendee token | Read ordered, paginated transcript history |
+
+See the [realtime transcript contract](transcript-api.md) for revisions, retries,
+append behavior, privacy and the Flutter integration steps.
 
 `POST /search` is a different API: it is the server-to-server conversation search and needs `CONVERSATION_API_TOKEN`. Never put that token in Flutter.
 
