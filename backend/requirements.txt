@@ -2,3 +2,4 @@
 fastapi
 uvicorn
 elasticsearch
+dash0-opentelemetry
