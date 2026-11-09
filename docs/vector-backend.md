@@ -1,6 +1,6 @@
 # Conversation vector backend
 
-The FastAPI server accepts full transcript revisions and uses Elasticsearch Serverless `semantic_text` for embeddings and semantic search. No mobile audio or transcripts are uploaded by this change. The existing public `GET /querysession` endpoint and its synthetic-only `conversations` response remain compatible with the pending Flutter search integration. The new authenticated routes use a separate alias and do not alter the existing `conversations` index.
+The FastAPI server accepts full transcript revisions and uses Elasticsearch Serverless `semantic_text` for embeddings and semantic search. No mobile audio or transcripts are uploaded by this change. The existing public `GET /querysession` endpoint and its synthetic-only `conversations` response remain compatible with the connected Flutter search screen. The new authenticated routes use a separate alias and do not alter the existing `conversations` index or Node.js adapter.
 
 ## Data path
 

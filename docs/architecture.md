@@ -5,10 +5,10 @@
 The agreed MVP is a native Flutter app for Android and iOS. Its first screen has two blobs: **Press to record conversation** and **Find me conversations**.
 
 - Recording uses bundled Whisper large-v3-turbo Q5_0 through whisper.cpp on the device and displays live transcript updates. Tap again to stop; the MVP retains the three-minute limit and stops recording when backgrounded.
-- Search accepts **typed interests**. For now it is an explicitly labeled preview with no backend requests or fabricated matches.
+- Search accepts **typed interests** and calls the FastAPI `GET /querysession` endpoint. The backend currently restricts results to a synthetic demo conversation; the UI labels this limitation and displays actual returned transcripts. Attendee matching still needs backend authentication and access-control filters.
 - The FastAPI backend now implements full-transcript revision ingestion, Elasticsearch semantic indexing, search, deletion, and bounded retention cleanup. These APIs require a server-to-server bearer token; Flutter uploads and end-user authentication are not connected yet. Conversations are private by default and can explicitly opt into conference search. See [the vector backend contract](vector-backend.md) for setup, API payloads, and deployment prerequisites.
 - Whisper partials contain the full revised transcript. Ingestion replaces one document per conference/owner/conversation, rejects stale revisions, and handles identical retries without embedding again. Elasticsearch `semantic_text` uses the same explicit inference endpoint for indexing and search. Mobile ingestion should coalesce partials and send the final transcript when stopped.
-- Recording remains explicit and requires participants' permission. The current MVP uploads nothing and keeps transcripts in session memory only.
+- Recording remains explicit and requires participants' permission. The current MVP keeps recorded transcripts in session memory only. Search sends typed interests to the backend; recordings are not uploaded.
 
 The original hackathon sketch below remains as historical backend context; its mobile-web-only and no-native-app scope no longer describes the chosen frontend.
 
@@ -190,5 +190,19 @@ Voice Spaces (add through a hosted service last, and don't transcribe them), rea
 - README with setup steps.
 - Disclosure of the AI tools we used.
 - Everyone can explain the architecture and technical decisions.
+
+## Implemented Elastic database
+
+The Elastic project now has `conversations` plus the five historical indices above.
+The Node.js conversation adapter supports full transcript revisions and typed-interest
+semantic search. See [Elasticsearch setup](elasticsearch.md) for the pinned Jina model,
+setup commands, and live validation of that existing schema. The public FastAPI
+`GET /querysession` endpoint searches only its synthetic fixture in `conversations`.
+
+The authenticated FastAPI vector API uses a separately provisioned
+`conversation-garden-conversations` alias with its own schema, revision protection,
+and retention cleanup. See [the vector backend contract](vector-backend.md).
+It does not consume the Node.js adapter, migrate the existing indices, or connect
+Flutter recordings to ingestion; Flutter search continues to use `/querysession`.
 
 *Drafted with Claude Code.*
