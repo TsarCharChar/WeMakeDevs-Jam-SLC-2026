@@ -1,3 +1,10 @@
+import { readFileSync } from 'node:fs';
+
+// Share the additive mapping with the Python API and manual migration command.
+const presenceMapping = JSON.parse(readFileSync(
+  new URL('../../backend/mappings/conversation-presence.json', import.meta.url), 'utf8',
+)).properties.presence;
+
 // Explicit inference IDs keep indexing and query embeddings compatible.
 export const DEFAULT_INFERENCE_ID = '.jina-embeddings-v5-text-small';
 
@@ -12,6 +19,7 @@ export function mappings(inferenceId = DEFAULT_INFERENCE_ID) {
       conversation_id: keyword, handle: keyword, revision: { type: 'long' },
       transcript: semantic, topics: keyword, visibility: keyword,
       consent: { type: 'boolean' }, is_final: { type: 'boolean' }, updated_at: date,
+      presence: structuredClone(presenceMapping),
     },
     talks: {
       title: text, abstract: text, content: semantic, topics: keyword,
@@ -19,6 +27,7 @@ export function mappings(inferenceId = DEFAULT_INFERENCE_ID) {
     },
     people: {
       handle: keyword, token_hash: { type: 'keyword', index: false, doc_values: false },
+      display_name: { type: 'keyword', index: false, doc_values: false },
       interests: semantic, topics: keyword, starred_talks: keyword, last_active: date,
     },
     moments: { handle: keyword, source: keyword, gist: semantic, topics: keyword, at: date },

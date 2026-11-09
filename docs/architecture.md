@@ -166,7 +166,7 @@ Workflows has no documented trigger for new documents, so the server starts `mat
 
 ## Not today
 
-Voice Spaces (add through a hosted service last, and don't transcribe them), real push notifications, a native app, location, and speaker identification.
+Voice Spaces (add through a hosted service last, and don't transcribe them), real push notifications, a native app, and speaker identification. Opt-in attendee location is covered in [geospatial presence](geospatial.md).
 
 ## Build order
 

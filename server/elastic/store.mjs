@@ -10,6 +10,13 @@ export function documentId(conference, handle, conversationId) {
   return createHash('sha256').update(JSON.stringify([conference, handle, conversationId])).digest('hex');
 }
 
+// Elasticsearch may add defaults; require our declared fields recursively.
+function mappingMatches(actual, expected) {
+  if (expected === null || typeof expected !== 'object') return actual === expected;
+  return actual !== null && typeof actual === 'object'
+    && Object.entries(expected).every(([key, value]) => mappingMatches(actual[key], value));
+}
+
 export async function setup(request, inferenceId = DEFAULT_INFERENCE_ID) {
   const inference = await request('GET', `/_inference/${encodeURIComponent(inferenceId)}`);
   const endpoint = inference.endpoints?.find(e => e.inference_id === inferenceId);
@@ -28,7 +35,7 @@ export async function setup(request, inferenceId = DEFAULT_INFERENCE_ID) {
       }
       for (const [field, expected] of Object.entries(definition.mappings.properties)) {
         const found = actual.properties?.[field];
-        if (!found || Object.entries(expected).some(([key, value]) => found[key] !== value)) {
+        if (!mappingMatches(found, expected)) {
           throw new Error(`${name}.${field} differs from the expected mapping; migrate explicitly.`);
         }
       }
