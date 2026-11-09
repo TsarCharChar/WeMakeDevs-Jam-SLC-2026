@@ -22,3 +22,14 @@ subprojects {
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }
+
+// whisper_ggml pins a preview NDK. Build it with the stable r29 release instead.
+subprojects {
+    if (name == "whisper_ggml") {
+        pluginManager.withPlugin("com.android.library") {
+            extensions.configure<com.android.build.api.variant.LibraryAndroidComponentsExtension> {
+                finalizeDsl { it.ndkVersion = "29.0.14206865" }
+            }
+        }
+    }
+}
