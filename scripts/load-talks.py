@@ -28,6 +28,7 @@ NOT_TOPICS = {
     "any level", "beginner", "intermediate", "advanced", "end user talk", "maintainer track", "sponsored",
     "cloud native theater", "project lightning talks", "sponsor demo theater", "keynote sessions",
     "solutions showcase", "experiences", "learning lounge", "cloud native university", "cloud native experience",
+    "emerging + advanced", "separate registration required",
 }
 LOGISTICS = re.compile(r"registration|badge|coat \+ bag|bag check|breakfast|lunch|coffee break|shuttle|\bclosed\b", re.I)
 

@@ -8,7 +8,7 @@ Base URL: `https://grindset.cnh.radarhq.io`. All examples are synthetic.
 | `POST /moments` | Attendee token | Publish one approved gist |
 | `GET /graph` | Attendee token | Topic nodes and edges |
 | `GET /search` | Attendee token | Search talks and moments |
-| `GET /recommendations` | Attendee token | Talks and moments ranked by the attendee's own notes and profile |
+| `GET /recommendations` | Attendee token | The topics closest to the attendee's own notes and profile, with talks and moments |
 | `GET /feed` | Attendee token | The attendee's own alerts |
 | `PUT /transcripts/{stream_id}/segments/{sequence}` | Attendee token | Save a partial or final private transcript segment |
 | `GET /transcripts/{stream_id}/segments/{sequence}` | Attendee token | Read the latest saved segment revision |
@@ -179,12 +179,12 @@ Results are best match first. Use `type` to choose the layout, and treat absent 
 
 ## GET /recommendations
 
-Requires the token. Query: `limit` (1-50, default 10), `conference` (optional, must match the token's conference).
+Requires the token. Query: `limit` (results, 1-50, default 10), `conference` (optional, must match the token's conference).
 
-The server reads the caller's own five most recent **finalized** transcript segments (see the
-[transcript contract](transcript-api.md)) and the `interests` and `topics` from their profile, and ranks talks and
-moments against them. Nothing has to be sent: the note text is already in Elasticsearch, so it never travels in a URL.
-The caller's own moments are left out.
+Returns the **topics the caller is closest to**, then the talks and moments behind them. The server reads the
+caller's own five most recent **finalized** transcript segments (see the [transcript contract](transcript-api.md))
+and the `interests` and `topics` from their profile. Nothing has to be sent: the note text is already in
+Elasticsearch, so it never travels in a URL.
 
 `GET /recommendations?limit=10`
 
@@ -193,6 +193,10 @@ The caller's own moments are left out.
   "conference": "cnh",
   "mode": "hybrid",
   "based_on": {"notes": 2, "topics": ["eBPF"], "interests": true},
+  "topics": [
+    {"id": "Observability", "label": "Observability", "talks": 7, "moments": 1, "people": 2, "mine": false},
+    {"id": "eBPF", "label": "eBPF", "talks": 3, "moments": 0, "people": 4, "mine": true}
+  ],
   "results": [
     {
       "type": "talk",
@@ -210,11 +214,21 @@ The caller's own moments are left out.
 }
 ```
 
-`results` has the same shape as `GET /search`. `based_on` says what the ranking used, so the app can explain it in
-words; it holds counts and the caller's own topics, never note text. `mode` is `keyword` when semantic ranking was
-unavailable or when only topics were available. With no finalized notes, no interests and no topics, `results` is
-empty and no content search runs. Partial segments are ignored, so a recording counts once it is finalized. Notes stay
-private: only the token's own attendee is ever read, and the response carries no handle.
+How it ranks: the note and interest text is matched by meaning against `talks.content` and `moments.gist`. Those are
+`semantic_text` fields, so Elasticsearch compares embeddings by cosine similarity. A topic is close when the
+best-matching talks and moments carry it.
+
+- `topics` holds up to twelve, closest first. The order is the ranking; there is no score, because it is not a
+  percentage. `talks` and `moments` say how many of the best matches carry the topic. `people` is how many **other**
+  attendees have that topic in their profile: a count from an aggregation, with no handle read. `mine` is true when
+  the topic is already in the caller's profile.
+- `results` has the same shape as `GET /search`. The caller's own moments are left out.
+- `based_on` says what the ranking used, so the app can explain it in words. It holds counts and the caller's own
+  topics, never note text.
+- `mode` is `keyword` when semantic ranking was unavailable or when only topics were available.
+- With no finalized notes, no interests and no topics, both lists are empty and no content search runs. Partial
+  segments are ignored, so a recording counts once it is finalized.
+- Notes stay private: only the token's own attendee is ever read, and the response carries no handle.
 
 ## GET /feed
 
