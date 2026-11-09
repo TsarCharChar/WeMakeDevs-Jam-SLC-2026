@@ -4,3 +4,4 @@ httpx==0.28.1
 elasticsearch
 dash0-opentelemetry
 opentelemetry-api
+pydantic>=2.9,<3

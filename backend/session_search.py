@@ -5,8 +5,11 @@ import os
 from elastic_transport import TransportError
 from elasticsearch import ApiError
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 
 from backend.elastic_client import get_elasticsearch_client
+from backend.geospatial import GeographicSearch
 
 router = APIRouter()
 
@@ -18,8 +21,25 @@ def query_session(
         min_length=2,
         max_length=120,
         description="Topic to search in conversation transcripts"
-    )
+    ),
+    conference: str | None = Query(default=None, min_length=1, max_length=128),
+    venue_id: str | None = Query(default=None, min_length=1, max_length=128),
+    room_id: str | None = Query(default=None, min_length=1, max_length=128),
+    zone_id: str | None = Query(default=None, min_length=1, max_length=128),
+    floor: str | None = Query(default=None, min_length=1, max_length=128),
+    lat: float | None = Query(default=None, ge=-90, le=90, allow_inf_nan=False),
+    lon: float | None = Query(default=None, ge=-180, le=180, allow_inf_nan=False),
+    radius_m: float | None = Query(default=None, gt=0, le=10000, allow_inf_nan=False),
 ):
+    try:
+        geographic = GeographicSearch(
+            conference=conference, venue_id=venue_id, room_id=room_id,
+            zone_id=zone_id, floor=floor, lat=lat, lon=lon, radius_m=radius_m,
+        )
+    except ValidationError as exc:
+        # Reuse the application's redacted validation response; never echo location.
+        raise RequestValidationError(exc.errors()) from exc
+
     # Create the Elasticsearch client
     es = get_elasticsearch_client()
 
@@ -59,11 +79,15 @@ def query_session(
                             "ids": {
                                 "values": [test_document_id]
                             }
-                        }
+                        },
+                        *geographic.filters(),
                     ]
                 }
             },
-            size=5
+            size=5,
+            source_includes=["conference", "transcript"] + (
+                ["presence"] if geographic.enabled else []
+            ),
         )
 
         conversations = []
@@ -71,11 +95,14 @@ def query_session(
         for hit in response["hits"]["hits"]:
             source = hit["_source"]
 
-            conversations.append({
+            conversation = {
                 "id": hit["_id"],
                 "conference": source.get("conference"),
                 "transcript": source.get("transcript")
-            })
+            }
+            if geographic.enabled:
+                conversation["presence"] = source.get("presence")
+            conversations.append(conversation)
 
         return {
             "conversations": conversations

@@ -3,10 +3,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from elastic_transport import ConnectionError
-from elasticsearch import ConflictError
+from elasticsearch import ConflictError, NotFoundError
 from fastapi.testclient import TestClient
 
 from backend.attendee.auth import Attendee
+from backend.attendee.locations import LOCATIONS
 from backend.attendee.transcripts import segment_document_id
 from backend.config import Settings
 from backend.main import create_app
@@ -27,7 +28,32 @@ SCORE = 0.9
 class MatchElastic(TranscriptElastic):
     def __init__(self):
         super().__init__()
+        self.locations = {}
         self.client.update.side_effect = self.update
+        self.client.mget.side_effect = self.mget
+        self.client.delete.side_effect = self.delete
+
+    def index(self, *, index, id, document, **guard):
+        if index != LOCATIONS:
+            return super().index(index=index, id=id, document=document, **guard)
+        assert not guard
+        self.locations[id] = {"_id": id, "_source": copy.deepcopy(document)}
+        return {"result": "updated"}
+
+    def mget(self, *, index, ids):
+        assert index == LOCATIONS
+        return {"docs": [
+            {**copy.deepcopy(self.locations[doc_id]), "found": True} if doc_id in self.locations
+            else {"_id": doc_id, "found": False}
+            for doc_id in ids
+        ]}
+
+    def delete(self, *, index, id, refresh):
+        assert index == LOCATIONS and refresh == "wait_for"
+        if id not in self.locations:
+            raise error(NotFoundError, 404, {"found": False})
+        del self.locations[id]
+        return {"result": "deleted"}
 
     def update(self, *, index, id, doc, if_seq_no, if_primary_term, refresh):
         assert index == "conversations" and refresh == "wait_for" and if_primary_term == 1
@@ -41,15 +67,43 @@ class MatchElastic(TranscriptElastic):
     def search(self, *, query, size, sort=None, **kwargs):
         if sort is not None:
             return super().search(query=query, size=size, sort=sort, **kwargs)
-        assert kwargs["index"] == "conversations" and kwargs["allow_partial_search_results"] is False
+        assert kwargs["allow_partial_search_results"] is False
+        assert kwargs["index"] in ("conversations", LOCATIONS)
+        documents = self.locations if kwargs["index"] == LOCATIONS else self.conversations
         hits = []
-        for doc in copy.deepcopy(self.conversations).values():
+        # A knn query carries its privacy filters as a pre-filter.
+        query = query["knn"]["filter"] if "knn" in query else query
+        for doc in copy.deepcopy(documents).values():
             source = doc["_source"]
-            allowed = datetime.fromisoformat(source["expires_at"]) > datetime.now(UTC)
+            def field_value(field, source=source):
+                value = source
+                for key in field.split("."):
+                    if not isinstance(value, dict):
+                        return None
+                    value = value.get(key)
+                return value
+
+            allowed = "expires_at" not in source or datetime.fromisoformat(source["expires_at"]) > datetime.now(UTC)
             for clause in query["bool"]["filter"]:
                 if "term" in clause:
                     field, value = next(iter(clause["term"].items()))
-                    allowed &= source[field] == value
+                    allowed &= field_value(field) == value
+                if "terms" in clause:
+                    field, values = next(iter(clause["terms"].items()))
+                    allowed &= field_value(field) in values
+                if "geo_distance" in clause:
+                    allowed &= field_value("presence.location") is not None
+                if "range" in clause:
+                    field, bounds = next(iter(clause["range"].items()))
+                    value = field_value(field)
+                    if value is None:
+                        allowed = False
+                    else:
+                        instant = datetime.fromisoformat(value)
+                        for operator, bound in bounds.items():
+                            assert bound == "now"
+                            allowed &= (instant > datetime.now(UTC) if operator == "gt"
+                                        else instant <= datetime.now(UTC))
             for clause in query["bool"]["must_not"]:
                 field, value = next(iter(clause["term"].items()))
                 allowed &= source[field] != value
@@ -213,16 +267,21 @@ def test_matches_return_shared_text_without_author(client, elastic):
 def test_matches_build_a_cosine_query_with_every_privacy_filter(client, elastic):
     client.post("/matches", json=MATCH, headers=register(client))
     call = elastic.client.search.call_args.kwargs
-    assert call["query"]["bool"]["must"] == [{"match": {"transcript": {"query": MATCH["interests"]}}}]
-    assert call["query"]["bool"]["filter"] == [
+    knn = call["query"]["knn"]
+    assert knn["field"] == "transcript"
+    assert knn["k"] == 10
+    assert knn["query_vector_builder"] == {"text_embedding": {"model_text": MATCH["interests"]}}
+    # Privacy filters must be knn pre-filters, never post-filters on the top k.
+    assert set(call["query"]) == {"knn"}
+    assert knn["filter"]["bool"]["filter"] == [
         {"term": {"conference": "cnh"}},
         {"term": {"visibility": "conference"}},
         {"term": {"consent": True}},
         {"term": {"is_final": True}},
         {"range": {"expires_at": {"gt": "now"}}},
     ]
-    assert call["query"]["bool"]["must_not"] == [{"term": {"handle": "ada"}}]
-    assert "handle" not in call["source"]
+    assert knn["filter"]["bool"]["must_not"] == [{"term": {"handle": "ada"}}]
+    assert call["source"] == ["transcript", "topics", "updated_at", "handle"]
 
 
 def test_matches_exclude_private_segments(client, elastic):
@@ -268,8 +327,8 @@ def test_matches_cap_the_excerpt(client, elastic):
 
 def test_matches_use_saved_interests_when_none_are_sent(client, elastic):
     client.post("/matches", json={"conference": "cnh"}, headers=register(client, interests="eBPF tracing"))
-    must = elastic.client.search.call_args.kwargs["query"]["bool"]["must"]
-    assert must == [{"match": {"transcript": {"query": "eBPF tracing"}}}]
+    knn = elastic.client.search.call_args.kwargs["query"]["knn"]
+    assert knn["query_vector_builder"] == {"text_embedding": {"model_text": "eBPF tracing"}}
 
 
 def test_matches_need_some_interests(client, elastic):
@@ -318,3 +377,17 @@ def test_matches_partial_result_is_not_success(client, elastic):
     elastic.client.search.side_effect = None
     elastic.client.search.return_value = {"timed_out": True, "hits": {"hits": []}}
     assert client.post("/matches", json=MATCH, headers=headers).status_code == 503
+
+
+@pytest.mark.parametrize("changes", [
+    {"lat": 40}, {"lat": 91, "lon": 0, "radius_m": 100},
+    {"lat": 0, "lon": 0, "radius_m": 10001},
+    {"lat": 0, "lon": 0, "radius_m": 49},
+    {"room_id": "a"}, {"floor": "2"}, {"zone_id": "lobby"},
+    {"venue_id": " "}, {"presence": {"shared": True}},
+])
+def test_geo_matches_reject_invalid_scope_before_search(client, elastic, changes):
+    response = client.post("/matches", json=MATCH | changes, headers=register(client))
+    assert response.status_code == 422
+    assert all("input" not in item for item in response.json()["detail"])
+    elastic.client.search.assert_not_called()

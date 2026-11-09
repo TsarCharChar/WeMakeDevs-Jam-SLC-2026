@@ -1,5 +1,10 @@
 # Mobile app development
 
+Backend geospatial search and opt-in presence preparation are documented in
+[Geospatial conversation presence](docs/geospatial.md). Optional geographic
+filters work on authenticated `/matches` and synthetic `/querysession` search;
+attendee check-in persistence and Flutter location controls are not connected yet.
+
 ## Prerequisites
 
 - Install the [Flutter SDK](https://docs.flutter.dev/install) (includes Dart) and add its `bin` directory to PATH.

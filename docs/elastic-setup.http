@@ -40,6 +40,43 @@
       },
       "updated_at": {
         "type": "date"
+      },
+      "presence": {
+        "type": "object",
+        "dynamic": "strict",
+        "properties": {
+          "shared": {
+            "type": "boolean"
+          },
+          "venue_id": {
+            "type": "keyword"
+          },
+          "room_id": {
+            "type": "keyword"
+          },
+          "zone_id": {
+            "type": "keyword"
+          },
+          "floor": {
+            "type": "keyword"
+          },
+          "location": {
+            "type": "geo_point",
+            "ignore_malformed": false
+          },
+          "accuracy_m": {
+            "type": "float"
+          },
+          "source": {
+            "type": "keyword"
+          },
+          "updated_at": {
+            "type": "date"
+          },
+          "expires_at": {
+            "type": "date"
+          }
+        }
       }
     }
   }
@@ -108,6 +145,11 @@ PUT /people
         "type": "keyword"
       },
       "token_hash": {
+        "type": "keyword",
+        "index": false,
+        "doc_values": false
+      },
+      "display_name": {
         "type": "keyword",
         "index": false,
         "doc_values": false

@@ -74,12 +74,30 @@ test('setup is repeatable and rejects an incompatible inference model', async ()
     const name = path.split('/')[1];
     if (method === 'PUT') { indices[name] = body; return {}; }
     if (!indices[name]) throw new ElasticError(404, 'index_not_found_exception');
-    return { [name]: indices[name] };
+    return { [name]: structuredClone(indices[name]) };
   };
   assert.equal((await setup(request)).filter(r => r.status === 'created').length, 6);
   assert.equal((await setup(request)).filter(r => r.status === 'verified').length, 6);
   indices.conversations.mappings.properties.transcript.inference_id = 'wrong-model';
   await assert.rejects(setup(request), /differs/);
+});
+
+test('setup rejects missing or incompatible presence subfields without changing an index', async () => {
+  for (const change of [
+    fields => { delete fields.location; },
+    fields => { fields.location.type = 'text'; },
+    fields => { fields.expires_at.type = 'keyword'; },
+  ]) {
+    const indices = mappings();
+    change(indices.conversations.mappings.properties.presence.properties);
+    const request = async (method, path) => {
+      assert.equal(method, 'GET');
+      if (path.startsWith('/_inference/')) return { endpoints: [{ inference_id: DEFAULT_INFERENCE_ID, task_type: 'text_embedding' }] };
+      const name = path.split('/')[1];
+      return { [name]: structuredClone(indices[name]) };
+    };
+    await assert.rejects(setup(request), /conversations.presence differs/);
+  }
 });
 
 test('HTTP client uses API key, rejects Kibana and redacts server errors', async () => {
