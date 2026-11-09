@@ -201,7 +201,7 @@ Requires the token. The handle comes from the token, so do not send one; unknown
 ```
 
 Response `201`: `{"id": "...", "room": "topic:ebpf", "at": "2026-11-09T20:00:00+00:00"}`. The message is readable
-as soon as the response arrives. Messages expire after seven days.
+as soon as the response arrives, because the write refreshes the index instead of waiting for the next scheduled refresh. Messages expire after seven days.
 
 ### GET /rooms/{room}/messages
 

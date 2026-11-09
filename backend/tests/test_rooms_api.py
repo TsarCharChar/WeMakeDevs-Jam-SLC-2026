@@ -20,7 +20,7 @@ class RoomElastic(Elastic):
     def index(self, *, index, id, document, **guard):
         if index != "messages":
             return super().index(index=index, id=id, document=document, **guard)
-        assert guard == {"op_type": "create", "refresh": "wait_for"}
+        assert guard == {"op_type": "create", "refresh": True}
         assert id not in self.messages
         self.messages[id] = document
         return {"result": "created"}

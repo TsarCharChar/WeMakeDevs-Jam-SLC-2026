@@ -79,7 +79,9 @@ def post_message(
             index=MESSAGES,
             id=message_id,
             op_type="create",
-            refresh="wait_for",
+            # A chat line has to be readable at once. Waiting for the scheduled refresh took two
+            # to five seconds per message on Serverless, so this asks for one now instead.
+            refresh=True,
             document={
                 "conference": attendee.conference,
                 "room": key,
