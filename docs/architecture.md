@@ -6,11 +6,13 @@ The agreed MVP is a native Flutter app for Android and iOS. Its first screen has
 
 - Recording uses bundled Whisper large-v3-turbo Q5_0 through whisper.cpp on the device and displays live transcript updates. Tap again to stop; the MVP retains the three-minute limit and stops recording when backgrounded.
 - Search accepts **typed interests** and calls the FastAPI `GET /querysession` endpoint. The backend currently restricts results to a synthetic demo conversation; the UI labels this limitation and displays actual returned transcripts. Attendee matching still needs backend authentication and access-control filters.
-- The future server receives live transcript updates, embeds text, and indexes conversations for similarity search. This replaces the earlier review-before-publish and approved-summaries-only flow. The transport, authentication, retention, and conversation visibility contract still need implementation decisions.
-- Whisper partials contain the full revised transcript. Future ingestion must upsert a conversation/revision rather than embed every partial as a separate conversation. Search will embed typed interests using the same embedding model as indexed conversations and compare compatible vectors.
+- The FastAPI backend now implements full-transcript revision ingestion, Elasticsearch semantic indexing, search, deletion, and bounded retention cleanup. These APIs require a server-to-server bearer token; Flutter uploads and end-user authentication are not connected yet. Conversations are private by default and can explicitly opt into conference search. See [the vector backend contract](vector-backend.md) for setup, API payloads, and deployment prerequisites.
+- Whisper partials contain the full revised transcript. Ingestion replaces one document per conference/owner/conversation, rejects stale revisions, and handles identical retries without embedding again. Elasticsearch `semantic_text` uses the same explicit inference endpoint for indexing and search. Mobile ingestion should coalesce partials and send the final transcript when stopped.
 - Recording remains explicit and requires participants' permission. The current MVP keeps recorded transcripts in session memory only. Search sends typed interests to the backend; recordings are not uploaded.
 
 The original hackathon sketch below remains as historical backend context; its mobile-web-only and no-native-app scope no longer describes the chosen frontend.
+
+The implemented backend schema replaces the historical `moments` schema for conversation discovery. The topic graph, conference imports, profiles, alerts, rooms, and Elastic Workflows below remain future work. The backend container deploys through GitHub Actions and Argo CD to the `grindset` vcluster; the earlier Next.js/kind/cloudflared description is historical.
 
 Working sketch for our Cloud Native Hackathon project (Elasticsearch track). Expect it to change as we build.
 
@@ -192,9 +194,15 @@ Voice Spaces (add through a hosted service last, and don't transcribe them), rea
 ## Implemented Elastic database
 
 The Elastic project now has `conversations` plus the five historical indices above.
-The conversation store supports full transcript revisions and typed-interest semantic
-search for the native MVP described in PR #3. See [Elasticsearch setup](elasticsearch.md)
-for the pinned Jina model, setup commands, live validation, and API integration work.
-The Node.js adapter is not yet connected to the existing FastAPI service or Flutter app.
+The Node.js conversation adapter supports full transcript revisions and typed-interest
+semantic search. See [Elasticsearch setup](elasticsearch.md) for the pinned Jina model,
+setup commands, and live validation of that existing schema. The public FastAPI
+`GET /querysession` endpoint searches only its synthetic fixture in `conversations`.
+
+The authenticated FastAPI vector API uses a separately provisioned
+`conversation-garden-conversations` alias with its own schema, revision protection,
+and retention cleanup. See [the vector backend contract](vector-backend.md).
+It does not consume the Node.js adapter, migrate the existing indices, or connect
+Flutter recordings to ingestion; Flutter search continues to use `/querysession`.
 
 *Drafted with Claude Code.*
