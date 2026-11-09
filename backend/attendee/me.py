@@ -1,14 +1,50 @@
 from typing import Annotated
 
 from elasticsearch import ConflictError
-from fastapi import APIRouter, Header, Request, Response
+from fastapi import APIRouter, Depends, Header, Request, Response
 
-from backend.attendee.auth import hash_token, issue_token, parse_bearer, person_id, token_id, token_matches
+from backend.attendee.auth import (
+    INVALID_TOKEN,
+    Attendee,
+    current_attendee,
+    hash_token,
+    issue_token,
+    parse_bearer,
+    person_id,
+    token_id,
+    token_matches,
+)
 from backend.attendee.elastic import PEOPLE, RETENTION, elastic_errors, get_client, get_person
-from backend.attendee.models import ProfileResponse, ProfileWrite
+from backend.attendee.models import ProfileRead, ProfileResponse, ProfileWrite
 from backend.vector_store import StoreError, utcnow
 
 router = APIRouter()
+
+
+def profile_view(source: dict) -> dict:
+    return {
+        "handle": source["handle"],
+        "conference": source["conference"],
+        "display_name": source.get("display_name"),
+        "interests": source.get("interests", ""),
+        "topics": source.get("topics", []),
+        "starred_talks": source.get("starred_talks", []),
+        "last_active": source["last_active"],
+        "expires_at": source["expires_at"],
+    }
+
+
+@router.get("/me", response_model=ProfileRead, response_model_exclude_none=True)
+def get_me(
+    attendee: Annotated[Attendee, Depends(current_attendee)],
+    request: Request,
+    response: Response,
+):
+    response.headers["Cache-Control"] = "no-store"
+    person = get_person(get_client(request), person_id(attendee.conference, attendee.handle))
+    if person is None:
+        raise StoreError(401, INVALID_TOKEN)
+    return profile_view(person["_source"])
 
 
 @router.put("/me", response_model=ProfileResponse, response_model_exclude_none=True)
@@ -27,25 +63,32 @@ def put_me(
     es = get_client(request)
     previous = get_person(es, doc_id)
     if previous is None and token:
-        raise StoreError(401, "A valid attendee token is required")
+        raise StoreError(401, INVALID_TOKEN)
     if previous is not None and not token:
         raise StoreError(409, "That handle is already taken")
     if previous is not None and not token_matches(token, previous["_source"]):
-        raise StoreError(401, "A valid attendee token is required")
+        raise StoreError(401, INVALID_TOKEN)
+
+    saved = previous["_source"] if previous else {}
+
+    def chosen(field: str, default):
+        value = getattr(body, field)
+        return saved.get(field, default) if value is None else value
 
     now = utcnow()
     new_token = None if previous else issue_token(doc_id)
     document = {
         "conference": body.conference,
         "handle": body.handle,
-        "token_hash": previous["_source"]["token_hash"] if previous else hash_token(new_token),
-        "topics": body.topics,
-        "starred_talks": body.starred_talks,
+        "token_hash": saved["token_hash"] if previous else hash_token(new_token),
+        "topics": chosen("topics", []),
+        "starred_talks": chosen("starred_talks", []),
         "last_active": now.isoformat(),
         "expires_at": (now + RETENTION).isoformat(),
     }
-    if body.interests:
-        document["interests"] = body.interests
+    for field in ("display_name", "interests"):
+        if value := chosen(field, None):
+            document[field] = value
 
     # Creating and replacing are both conditional so concurrent requests cannot overwrite a claim.
     guard = (
@@ -62,14 +105,4 @@ def put_me(
 
     if new_token:
         response.status_code = 201
-    return {
-        "handle": body.handle,
-        "conference": body.conference,
-        "interests": body.interests,
-        "topics": body.topics,
-        "starred_talks": body.starred_talks,
-        "last_active": document["last_active"],
-        "expires_at": document["expires_at"],
-        "created": new_token is not None,
-        "token": new_token,
-    }
+    return {**profile_view(document), "created": new_token is not None, "token": new_token}
