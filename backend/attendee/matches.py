@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 from typing import Annotated
 
 from elasticsearch import Elasticsearch
@@ -44,10 +46,14 @@ def saved_interests(es: Elasticsearch, attendee: Attendee) -> str:
     return interests
 
 
-def to_match(hit: dict) -> dict:
+def opaque_id(doc_id: str, secret: bytes) -> str:
+    return hmac.new(secret, doc_id.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def to_match(hit: dict, secret: bytes) -> dict:
     source = hit["_source"]
     return {
-        "id": hit["_id"],
+        "id": opaque_id(hit["_id"], secret),
         "excerpt": source.get("transcript", "")[:EXCERPT_LENGTH],
         "topics": as_list(source.get("topics")),
         "updated_at": source.get("updated_at"),
@@ -91,4 +97,5 @@ def find_matches(
             }
         },
     )
-    return {"matches": [to_match(hit) for hit in data.get("hits", {}).get("hits", [])]}
+    secret = request.app.state.settings.match_id_secret
+    return {"matches": [to_match(hit, secret) for hit in data.get("hits", {}).get("hits", [])]}

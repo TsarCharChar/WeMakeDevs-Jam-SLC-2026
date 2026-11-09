@@ -14,6 +14,10 @@ class Settings:
     inference_id: str = ""
     service_token: str = field(default="", repr=False)
 
+    @property
+    def match_id_secret(self) -> bytes:
+        return self.elasticsearch_api_key.encode()
+
     @classmethod
     def from_env(cls):
         return cls(

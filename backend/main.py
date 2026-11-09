@@ -49,6 +49,7 @@ def create_app(settings: Settings | None = None, store: VectorStore | None = Non
                 await client.aclose()
 
     app = FastAPI(title="ConFellow API", lifespan=lifespan)
+    app.state.settings = settings
 
     @app.exception_handler(StoreError)
     async def store_error(_request, error):

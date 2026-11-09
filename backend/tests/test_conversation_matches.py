@@ -1,4 +1,6 @@
 import copy
+import hashlib
+import hmac
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -68,7 +70,7 @@ def elastic(monkeypatch):
 
 @pytest.fixture
 def client(elastic):
-    with TestClient(create_app(Settings())) as test_client:
+    with TestClient(create_app(Settings(elasticsearch_api_key="test-elasticsearch-key"))) as test_client:
         yield test_client
 
 
@@ -202,7 +204,12 @@ def test_matches_return_shared_text_without_author(client, elastic):
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "no-store"
     match = response.json()["matches"][0]
-    assert match["id"] == segment_document_id(BOB, STREAM, 0)
+    document_id = segment_document_id(BOB, STREAM, 0)
+    expected_id = hmac.new(
+        b"test-elasticsearch-key", document_id.encode(), hashlib.sha256
+    ).hexdigest()[:32]
+    assert match["id"] == expected_id
+    assert match["id"] != document_id
     assert match["excerpt"] == TEXT
     assert match["score"] == SCORE
     assert match["similarity"] == pytest.approx(0.8)
