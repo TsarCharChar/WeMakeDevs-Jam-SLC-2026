@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'conversation_api.dart';
+import 'cloud_sync_panel.dart';
+import 'transcript_sync.dart';
 import 'phone_profile_store.dart';
 import 'recording_controller.dart';
 import 'schedule_data.dart' as sched;
@@ -29,6 +31,7 @@ class ConversationApp extends StatelessWidget {
     this.catalog,
     this.profileStore,
     this.backend,
+    this.sync,
     this.undoWindow = const Duration(seconds: 5),
     this.disableAnimations = false,
   });
@@ -36,6 +39,7 @@ class ConversationApp extends StatelessWidget {
   final sched.ScheduleCatalog? catalog;
   final PhoneProfileStore? profileStore;
   final WavelengthBackend? backend;
+  final TranscriptSync? sync;
   final Duration undoWindow;
   final bool disableAnimations;
 
@@ -54,6 +58,7 @@ class ConversationApp extends StatelessWidget {
       initialCatalog: catalog,
       profileStore: profileStore,
       backend: backend,
+      sync: sync,
       undoWindow: undoWindow,
     ),
   );
@@ -65,12 +70,14 @@ class HomeScreen extends StatefulWidget {
     this.initialCatalog,
     this.profileStore,
     this.backend,
+    this.sync,
     this.undoWindow = const Duration(seconds: 5),
   });
 
   final sched.ScheduleCatalog? initialCatalog;
   final PhoneProfileStore? profileStore;
   final WavelengthBackend? backend;
+  final TranscriptSync? sync;
   final Duration undoWindow;
 
   @override
@@ -79,6 +86,7 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   late final RecordingController _recording;
+  late final TranscriptSync _sync;
   late final PhoneProfileStore _profileStore;
   late final bool _ownsProfileStore;
   late final PendingNoteSendCoordinator _noteCoordinator;
@@ -110,7 +118,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _profileStore = widget.profileStore ?? PhoneProfileStore();
     _catalog = widget.initialCatalog;
 
-    _recording = RecordingController(onNoteCompleted: _handleSpokenNote);
+    _sync = widget.sync ?? TranscriptSync();
+    _recording = RecordingController(
+      sync: _sync,
+      onNoteCompleted: _handleSpokenNote,
+    );
+    unawaited(_sync.initialize());
     _noteCoordinator = PendingNoteSendCoordinator(
       undoWindow: widget.undoWindow,
       onPreviewApplied: _handleDraftStaged,
@@ -158,6 +171,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         state == AppLifecycleState.detached) {
       unawaited(_recording.stop());
     }
+    if (state == AppLifecycleState.resumed && _sync.hasPending) {
+      unawaited(_sync.retry());
+    }
   }
 
   @override
@@ -166,6 +182,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _movedCloserTimer?.cancel();
     _noteCoordinator.dispose();
     _recording.dispose();
+    if (widget.sync == null) {
+      unawaited(_recording.closed.whenComplete(_sync.dispose));
+    }
     if (_ownsBackend) _backend?.close();
     if (_ownsProfileStore) _profileStore.dispose();
     super.dispose();
@@ -173,7 +192,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   String _nextNoteId() {
     final ms = DateTime.now().toUtc().millisecondsSinceEpoch;
-    final rand = math.Random().nextInt(0xFFFFF).toRadixString(16).padLeft(5, '0');
+    final rand = math.Random()
+        .nextInt(0xFFFFF)
+        .toRadixString(16)
+        .padLeft(5, '0');
     _noteSeq++;
     return 'note_${ms}_${_noteSeq}_$rand';
   }
@@ -209,6 +231,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       matchedTopics: matched,
       createdAt: DateTime.now().toUtc(),
       linkedUri: linkedUri,
+      privateTranscriptSaving: kind == NoteSourceKind.spoken && _sync.enabled,
     );
     _noteCoordinator.stageFinishedNote(draft);
   }
@@ -247,7 +270,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Future<void> _commitNoteToSeam(CapturedNoteDraft draft) async {
     final backend = _backend;
-    final source = draft.sourceKind == NoteSourceKind.spoken ? 'spoken' : 'notes';
+    final source = draft.sourceKind == NoteSourceKind.spoken
+        ? 'spoken'
+        : 'notes';
 
     final submission = NoteSubmission(
       conference: _profile.conference,
@@ -332,9 +357,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   void _openSearchScreen() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => const SearchScreen()),
-    );
+    Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => const SearchScreen()));
   }
 
   List<ConstellationNode> _buildRankedNodes({bool includeStaged = true}) {
@@ -439,7 +463,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: Listenable.merge([_recording, _noteCoordinator]),
+      listenable: Listenable.merge([_recording, _noteCoordinator, _sync]),
       builder: (context, _) {
         final isRecording = _recording.phase == RecordingPhase.recording;
         final nodes = _buildRankedNodes();
@@ -551,6 +575,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           radarSweepTrigger: _radarSweepTrigger,
                         ),
                       ),
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: CloudSyncPanel(
+                            sync: _sync,
+                            recording: _recording.phase != RecordingPhase.idle,
+                          ),
+                        ),
+                      ),
                       if (nodes.isNotEmpty)
                         SliverPadding(
                           padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
@@ -597,6 +630,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 WavelengthCaptureDock(
                   isRecording: isRecording,
                   isBusy: _recording.busy,
+                  canRecord: isRecording || _sync.canBegin,
                   onPressWaveImpulse: () =>
                       setState(() => _pressImpulseTrigger++),
                   onTapRecordOrStop: () => isRecording
@@ -614,6 +648,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       ? null
                       : NoteUndoReviewCard(
                           draft: pending,
+                          privateTranscriptSaving:
+                              pending.privateTranscriptSaving,
                           reviewBeforeSending:
                               _noteCoordinator.reviewBeforeSending,
                           undoDuration: widget.undoWindow,

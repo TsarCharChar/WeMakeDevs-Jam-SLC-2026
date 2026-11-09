@@ -39,6 +39,7 @@ class CapturedNoteDraft {
     required this.createdAt,
     this.linkedUri,
     this.shareNoteText = false,
+    this.privateTranscriptSaving = false,
   });
 
   /// Maps 1-to-1 to `conversationId` in the backend adapter (`one id per note`).
@@ -54,6 +55,9 @@ class CapturedNoteDraft {
 
   /// Off by default: other attendees see only matched topics unless shared.
   final bool shareNoteText;
+  // Capture the recording's consent state; changing settings later cannot
+  // retract text already uploaded to private history.
+  final bool privateTranscriptSaving;
 
   /// Primary card headline per `PROTOCOL.md`:
   /// - `"Tuned: eBPF, Observability"` when schedule topics matched
@@ -76,6 +80,7 @@ class CapturedNoteDraft {
       createdAt: createdAt,
       linkedUri: linkedUri,
       shareNoteText: shareNoteText ?? this.shareNoteText,
+      privateTranscriptSaving: privateTranscriptSaving,
     );
   }
 }
@@ -300,8 +305,8 @@ class WavelengthPreferencesStore {
   }
 }
 
-/// Coordinates the Undo / Review-before-sending window so nothing leaves the
-/// phone prematurely and `Undo` genuinely cancels transmission.
+/// Coordinates note submission and optional sharing. Separately consented
+/// realtime private transcript saving is not cancelled by Undo or Discard.
 class PendingNoteSendCoordinator extends ChangeNotifier {
   PendingNoteSendCoordinator({
     this.undoWindow = const Duration(seconds: 5),
@@ -366,7 +371,7 @@ class PendingNoteSendCoordinator extends ChangeNotifier {
     _notify();
   }
 
-  /// Cancels the pending note BEFORE any backend call and springs the map back.
+  /// Cancels this pending note submission and springs the map back.
   void undoOrDiscard() {
     final reverted = _pending;
     if (reverted == null) return;
@@ -409,7 +414,8 @@ class PendingNoteSendCoordinator extends ChangeNotifier {
 ///   (or `"Note saved"`), an optional **"Share this note"** toggle, a 5-second
 ///   phosphor countdown bar, and **`Undo`**.
 /// - When [reviewBeforeSending] is `true`: shows **`Discard`** and **`Send`**,
-///   sending nothing until **`Send`** is tapped.
+///   withholding this note submission until **`Send`** is tapped. Private
+///   transcript saving, if enabled, runs independently during recording.
 class NoteUndoReviewCard extends StatefulWidget {
   const NoteUndoReviewCard({
     super.key,
@@ -420,6 +426,7 @@ class NoteUndoReviewCard extends StatefulWidget {
     required this.onToggleShareText,
     this.undoDuration = const Duration(seconds: 5),
     this.windowStartedAt,
+    this.privateTranscriptSaving = false,
   });
 
   final CapturedNoteDraft draft;
@@ -429,6 +436,7 @@ class NoteUndoReviewCard extends StatefulWidget {
   final ValueChanged<bool> onToggleShareText;
   final Duration undoDuration;
   final DateTime? windowStartedAt;
+  final bool privateTranscriptSaving;
 
   @override
   State<NoteUndoReviewCard> createState() => _NoteUndoReviewCardState();
@@ -522,7 +530,9 @@ class _NoteUndoReviewCardState extends State<NoteUndoReviewCard>
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        widget.reviewBeforeSending
+                        widget.privateTranscriptSaving
+                            ? 'Private transcript saving is separate. Undo or Discard does not delete uploaded text.'
+                            : widget.reviewBeforeSending
                             ? 'Review before sending is on · nothing sent yet'
                             : draft.matchedTopics.isEmpty
                             ? 'Kept on your wavelength · no schedule tags matched'
@@ -741,6 +751,7 @@ class WavelengthCaptureDock extends StatefulWidget {
     super.key,
     required this.isRecording,
     required this.isBusy,
+    this.canRecord = true,
     required this.onTapRecordOrStop,
     required this.onSubmitManualNote,
     this.onPressWaveImpulse,
@@ -758,6 +769,7 @@ class WavelengthCaptureDock extends StatefulWidget {
 
   final bool isRecording;
   final bool isBusy;
+  final bool canRecord;
   final VoidCallback onTapRecordOrStop;
   final void Function({
     required String content,
@@ -869,7 +881,7 @@ class _WavelengthCaptureDockState extends State<WavelengthCaptureDock>
   }
 
   void _triggerPrimaryPressWave() {
-    if (widget.isBusy) return;
+    if (widget.isBusy || !widget.canRecord) return;
     HapticFeedback.mediumImpact();
     widget.onPressWaveImpulse?.call();
 
@@ -1052,21 +1064,21 @@ class _WavelengthCaptureDockState extends State<WavelengthCaptureDock>
           // 1. Primary Button: Tap to speak a note (Blue Phosphor idle -> Coral live waveform)
           Semantics(
             button: true,
-            enabled: !widget.isBusy,
+            enabled: !widget.isBusy && widget.canRecord,
             label: widget.isBusy
                 ? 'Preparing your note'
                 : widget.isRecording
                 ? 'Tap to finish speaking your note'
                 : 'Tap to speak a note',
             child: GestureDetector(
-              onTapDown: widget.isBusy
+              onTapDown: widget.isBusy || !widget.canRecord
                   ? null
                   : (_) {
                       setState(() => _pressedPrimary = true);
                       _triggerPrimaryPressWave();
                     },
               onTapCancel: () => setState(() => _pressedPrimary = false),
-              onTapUp: widget.isBusy
+              onTapUp: widget.isBusy || !widget.canRecord
                   ? null
                   : (_) {
                       setState(() => _pressedPrimary = false);
@@ -1599,10 +1611,7 @@ Future<void> showComposeNoteSheet({
 
 /// Sleek dark phosphor sheet supporting typed or pasted text notes (no file upload).
 class ComposeNoteSheet extends StatefulWidget {
-  const ComposeNoteSheet({
-    super.key,
-    required this.onSubmit,
-  });
+  const ComposeNoteSheet({super.key, required this.onSubmit});
 
   final void Function({
     required String content,
@@ -1702,8 +1711,7 @@ class _ComposeNoteSheetState extends State<ComposeNoteSheet> {
               style: WavelengthTypography.body,
               decoration: const InputDecoration(
                 labelText: 'Your note',
-                hintText:
-                    'e.g. Exploring Cilium observability and GPU inference autoscaling…',
+                hintText: 'e.g. Exploring Cilium observability and GPU inference autoscaling…',
               ),
             ),
 
@@ -1718,10 +1726,7 @@ class _ComposeNoteSheetState extends State<ComposeNoteSheet> {
                 icon: const Icon(Icons.content_paste_rounded, size: 18),
                 label: const Text(
                   'Paste clipboard',
-                  style: TextStyle(
-                    fontSize: 14.0,
-                    fontWeight: FontWeight.w600,
-                  ),
+                  style: TextStyle(fontSize: 14.0, fontWeight: FontWeight.w600),
                 ),
               ),
             ),
@@ -1922,7 +1927,7 @@ class _WavelengthSettingsSheetState extends State<WavelengthSettingsSheet> {
 
           const SizedBox(height: 14),
           const Text(
-            'Speak your own notes · Audio stays on your phone. Other attendees see only matched topics unless you choose Share this note.',
+            'Speak your own notes · Audio stays on your phone. Realtime saving uploads private transcript text only after opt-in. Review and Undo control note submission; they do not delete private uploads. Other attendees see only matched topics unless you choose Share this note.',
             style: WavelengthTypography.supporting,
           ),
         ],

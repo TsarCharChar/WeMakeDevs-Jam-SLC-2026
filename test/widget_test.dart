@@ -7,6 +7,7 @@ import 'package:conversation_garden/schedule_data.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 const String _testScheduleJson = '''
 [
@@ -44,6 +45,7 @@ void main() {
   late LabeledFakeWavelengthBackend fakeBackend;
 
   setUp(() async {
+    FlutterSecureStorage.setMockInitialValues({});
     tempDir = await Directory.systemTemp.createTemp('confellow_widget_test_');
     testCatalog = ScheduleCatalog.fromJsonString(_testScheduleJson);
     profileStore = PhoneProfileStore(directoryProvider: () async => tempDir);
@@ -117,113 +119,118 @@ void main() {
     );
   });
 
-  testWidgets('Undo cancels a typed note before backend send, and Review before sending waits for Send', (
-    tester,
-  ) async {
-    await tester.runAsync(() => profileStore.load());
-    await tester.pumpWidget(
-      buildTestableApp(undoWindow: const Duration(seconds: 4)),
-    );
-    await tester.pump(const Duration(milliseconds: 300));
+  testWidgets(
+    'Undo cancels a typed note before backend send, and Review before sending waits for Send',
+    (tester) async {
+      await tester.runAsync(() => profileStore.load());
+      await tester.pumpWidget(
+        buildTestableApp(undoWindow: const Duration(seconds: 4)),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
 
-    // 1. Compose a note mentioning Cilium -> stages Undo card immediately.
-    await tester.tap(find.text('Type or paste note'));
-    await tester.pumpAndSettle();
+      // 1. Compose a note mentioning Cilium -> stages Undo card immediately.
+      await tester.tap(find.text('Type or paste note'));
+      await tester.pumpAndSettle();
 
-    await tester.enterText(
-      find.byType(TextField).first,
-      'Exploring Cilium and OpenTelemetry tracing today',
-    );
-    await tester.pump();
-    final addBtn = find.text('Tune wavelength with note');
-    await tester.ensureVisible(addBtn);
-    await tester.tap(addBtn);
-    await tester.pump(const Duration(milliseconds: 400));
+      await tester.enterText(
+        find.byType(TextField).first,
+        'Exploring Cilium and OpenTelemetry tracing today',
+      );
+      await tester.pump();
+      final addBtn = find.text('Tune wavelength with note');
+      await tester.ensureVisible(addBtn);
+      await tester.tap(addBtn);
+      await tester.pump(const Duration(milliseconds: 400));
 
-    expect(find.textContaining('Tuned:'), findsOneWidget);
-    expect(fakeBackend.submittedPayloads, isEmpty);
+      expect(find.textContaining('Tuned:'), findsOneWidget);
+      expect(fakeBackend.submittedPayloads, isEmpty);
 
-    // 2. Tap Undo before the window elapses -> nothing ever hits the backend!
-    await tester.tap(find.text('Undo'));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('Tuned:'), findsNothing);
-    expect(fakeBackend.submittedPayloads, isEmpty);
+      // 2. Tap Undo before the window elapses -> nothing ever hits the backend!
+      await tester.tap(find.text('Undo'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Tuned:'), findsNothing);
+      expect(fakeBackend.submittedPayloads, isEmpty);
 
-    // 3. Enable "Review before sending" in settings.
-    await tester.tap(find.byTooltip('Settings'));
-    await tester.pumpAndSettle();
-    await tester.runAsync(() async {
-      await tester.tap(find.text('Review before sending'));
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    });
-    await tester.pumpAndSettle();
-    await tester.tap(find.byIcon(Icons.close_rounded));
-    await tester.pumpAndSettle();
+      // 3. Enable "Review before sending" in settings.
+      await tester.tap(find.byTooltip('Settings'));
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('Review before sending'));
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.close_rounded));
+      await tester.pumpAndSettle();
 
-    // 4. Compose another note -> shows Send note & Discard, does not auto-send.
-    await tester.tap(find.text('Type or paste note'));
-    await tester.pumpAndSettle();
-    await tester.enterText(
-      find.byType(TextField).first,
-      'Autoscaling GPU inference workloads',
-    );
-    await tester.pump();
-    final addBtn2 = find.text('Tune wavelength with note');
-    await tester.ensureVisible(addBtn2);
-    await tester.tap(addBtn2);
-    await tester.pumpAndSettle();
+      // 4. Compose another note -> shows Send note & Discard, does not auto-send.
+      await tester.tap(find.text('Type or paste note'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byType(TextField).first,
+        'Autoscaling GPU inference workloads',
+      );
+      await tester.pump();
+      final addBtn2 = find.text('Tune wavelength with note');
+      await tester.ensureVisible(addBtn2);
+      await tester.tap(addBtn2);
+      await tester.pumpAndSettle();
 
-    expect(find.text('Send note'), findsOneWidget);
-    expect(find.text('Discard'), findsOneWidget);
-    expect(fakeBackend.submittedPayloads, isEmpty);
+      expect(find.text('Send note'), findsOneWidget);
+      expect(find.text('Discard'), findsOneWidget);
+      expect(fakeBackend.submittedPayloads, isEmpty);
 
-    await tester.runAsync(() async {
-      await tester.tap(find.text('Send note'));
-      await profileStore.flush();
-    });
-    await tester.pump(const Duration(seconds: 5));
-    await tester.pumpAndSettle();
-    expect(fakeBackend.submittedPayloads, hasLength(1));
-    expect(fakeBackend.submittedPayloads.single['visibility'], 'conference');
-    expect(fakeBackend.submittedPayloads.single['consent'], isTrue);
-  });
+      await tester.runAsync(() async {
+        await tester.tap(find.text('Send note'));
+        await profileStore.flush();
+      });
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pumpAndSettle();
+      expect(fakeBackend.submittedPayloads, hasLength(1));
+      expect(fakeBackend.submittedPayloads.single['visibility'], 'conference');
+      expect(fakeBackend.submittedPayloads.single['consent'], isTrue);
+    },
+  );
 
-  testWidgets('Space discovery sheet shows words-only match reason, people count, and I am going toggle', (
-    tester,
-  ) async {
-    await tester.runAsync(() => profileStore.load());
-    await tester.pumpWidget(buildTestableApp());
-    await tester.pumpAndSettle();
+  testWidgets(
+    'Space discovery sheet shows words-only match reason, people count, and I am going toggle',
+    (tester) async {
+      await tester.runAsync(() => profileStore.load());
+      await tester.pumpWidget(buildTestableApp());
+      await tester.pumpAndSettle();
 
-    final talkRow = find.text('Zero-Overhead Observability with Cilium');
-    await tester.scrollUntilVisible(
-      talkRow,
-      160,
-      scrollable: find.byType(Scrollable).last,
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(talkRow);
-    await tester.pumpAndSettle();
+      final talkRow = find.text('Zero-Overhead Observability with Cilium');
+      await tester.scrollUntilVisible(
+        talkRow,
+        160,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(talkRow);
+      await tester.pumpAndSettle();
 
-    expect(find.textContaining('Salt Palace | Room 250A'), findsOneWidget);
-    expect(find.text('12 people tuned in'), findsOneWidget);
-    expect(find.textContaining('%'), findsNothing);
-    expect(find.textContaining('nearby'), findsNothing);
+      expect(find.textContaining('Salt Palace | Room 250A'), findsOneWidget);
+      expect(find.text('12 people tuned in'), findsOneWidget);
+      expect(find.textContaining('%'), findsNothing);
+      expect(find.textContaining('nearby'), findsNothing);
 
-    final goingBtn = find.text("I'm going");
-    await tester.scrollUntilVisible(
-      goingBtn,
-      120,
-      scrollable: find.byType(Scrollable).last,
-    );
-    await tester.pumpAndSettle();
-    await tester.runAsync(() async {
-      await tester.tap(goingBtn);
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    });
-    await tester.pumpAndSettle();
-    expect(profileStore.profile!.goingTalkIds, contains('ebpf-observability-cilium-2026-11-10-1100'));
-  });
+      final goingBtn = find.text("I'm going");
+      await tester.scrollUntilVisible(
+        goingBtn,
+        120,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(goingBtn);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await tester.pumpAndSettle();
+      expect(
+        profileStore.profile!.goingTalkIds,
+        contains('ebpf-observability-cilium-2026-11-10-1100'),
+      );
+    },
+  );
 
   testWidgets('Search remains usable on a narrow display with large text', (
     tester,
