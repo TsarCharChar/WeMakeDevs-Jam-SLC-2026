@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from backend.attendee import router as attendee_router
 from backend.config import Settings
 from backend.maintenance import expire_periodically
 from backend.models import (
@@ -115,6 +116,7 @@ def create_app(settings: Settings | None = None, store: VectorStore | None = Non
         return await current.delete(conversation_id, conference, owner_id)
 
     app.include_router(session_search_router)
+    app.include_router(attendee_router)
 
     return app
 
