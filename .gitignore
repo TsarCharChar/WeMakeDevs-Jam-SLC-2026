@@ -1,4 +1,10 @@
 # Miscellaneous
+# Server credentials and local browser automation artifacts
+.env
+.env.*
+!.env.example
+.playwright-mcp/
+
 *.class
 *.lock
 *.log

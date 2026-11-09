@@ -1,0 +1,233 @@
+﻿PUT /conversations
+{
+  "mappings": {
+    "dynamic": "strict",
+    "_meta": {
+      "application": "conversation-garden",
+      "schema_version": 1
+    },
+    "properties": {
+      "conference": {
+        "type": "keyword"
+      },
+      "expires_at": {
+        "type": "date"
+      },
+      "conversation_id": {
+        "type": "keyword"
+      },
+      "handle": {
+        "type": "keyword"
+      },
+      "revision": {
+        "type": "long"
+      },
+      "transcript": {
+        "type": "semantic_text",
+        "inference_id": ".jina-embeddings-v5-text-small"
+      },
+      "topics": {
+        "type": "keyword"
+      },
+      "visibility": {
+        "type": "keyword"
+      },
+      "consent": {
+        "type": "boolean"
+      },
+      "is_final": {
+        "type": "boolean"
+      },
+      "updated_at": {
+        "type": "date"
+      }
+    }
+  }
+}
+
+PUT /talks
+{
+  "mappings": {
+    "dynamic": "strict",
+    "_meta": {
+      "application": "conversation-garden",
+      "schema_version": 1
+    },
+    "properties": {
+      "conference": {
+        "type": "keyword"
+      },
+      "expires_at": {
+        "type": "date"
+      },
+      "title": {
+        "type": "text"
+      },
+      "abstract": {
+        "type": "text"
+      },
+      "content": {
+        "type": "semantic_text",
+        "inference_id": ".jina-embeddings-v5-text-small"
+      },
+      "topics": {
+        "type": "keyword"
+      },
+      "start": {
+        "type": "date"
+      },
+      "end": {
+        "type": "date"
+      },
+      "room": {
+        "type": "keyword"
+      },
+      "speakers": {
+        "type": "keyword"
+      }
+    }
+  }
+}
+
+PUT /people
+{
+  "mappings": {
+    "dynamic": "strict",
+    "_meta": {
+      "application": "conversation-garden",
+      "schema_version": 1
+    },
+    "properties": {
+      "conference": {
+        "type": "keyword"
+      },
+      "expires_at": {
+        "type": "date"
+      },
+      "handle": {
+        "type": "keyword"
+      },
+      "token_hash": {
+        "type": "keyword",
+        "index": false,
+        "doc_values": false
+      },
+      "interests": {
+        "type": "semantic_text",
+        "inference_id": ".jina-embeddings-v5-text-small"
+      },
+      "topics": {
+        "type": "keyword"
+      },
+      "starred_talks": {
+        "type": "keyword"
+      },
+      "last_active": {
+        "type": "date"
+      }
+    }
+  }
+}
+
+PUT /moments
+{
+  "mappings": {
+    "dynamic": "strict",
+    "_meta": {
+      "application": "conversation-garden",
+      "schema_version": 1
+    },
+    "properties": {
+      "conference": {
+        "type": "keyword"
+      },
+      "expires_at": {
+        "type": "date"
+      },
+      "handle": {
+        "type": "keyword"
+      },
+      "source": {
+        "type": "keyword"
+      },
+      "gist": {
+        "type": "semantic_text",
+        "inference_id": ".jina-embeddings-v5-text-small"
+      },
+      "topics": {
+        "type": "keyword"
+      },
+      "at": {
+        "type": "date"
+      }
+    }
+  }
+}
+
+PUT /alerts
+{
+  "mappings": {
+    "dynamic": "strict",
+    "_meta": {
+      "application": "conversation-garden",
+      "schema_version": 1
+    },
+    "properties": {
+      "conference": {
+        "type": "keyword"
+      },
+      "expires_at": {
+        "type": "date"
+      },
+      "to_handle": {
+        "type": "keyword"
+      },
+      "kind": {
+        "type": "keyword"
+      },
+      "room": {
+        "type": "keyword"
+      },
+      "why": {
+        "type": "text"
+      },
+      "at": {
+        "type": "date"
+      },
+      "seen": {
+        "type": "boolean"
+      }
+    }
+  }
+}
+
+PUT /messages
+{
+  "mappings": {
+    "dynamic": "strict",
+    "_meta": {
+      "application": "conversation-garden",
+      "schema_version": 1
+    },
+    "properties": {
+      "conference": {
+        "type": "keyword"
+      },
+      "expires_at": {
+        "type": "date"
+      },
+      "room": {
+        "type": "keyword"
+      },
+      "handle": {
+        "type": "keyword"
+      },
+      "text": {
+        "type": "text"
+      },
+      "at": {
+        "type": "date"
+      }
+    }
+  }
+}
