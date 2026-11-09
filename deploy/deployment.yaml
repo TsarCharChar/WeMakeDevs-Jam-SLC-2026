@@ -50,6 +50,13 @@ spec:
             - secretRef:
                 name: app-vector-search
                 optional: true
+            - configMapRef:
+                name: dynamic-sessions-config
+                optional: true
+            # Optional administrator token for manual dynamic session runs.
+            - secretRef:
+                name: dynamic-sessions-admin
+                optional: true
 
           resources:
             requests:
