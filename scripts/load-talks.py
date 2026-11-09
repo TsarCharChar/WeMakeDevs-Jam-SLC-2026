@@ -90,6 +90,9 @@ def main():
     schedule_path, env_path, write = sys.argv[1], sys.argv[2], "--write" in sys.argv[3:]
     docs = list(documents(json.load(open(schedule_path, encoding="utf-8"))))
     print(f"{len(docs)} talks to load into conference {CONFERENCE!r}")
+    if not docs:
+        # Every row was filtered out, or the file is empty: there is nothing to show or send.
+        return
     if not write:
         print("dry run, nothing sent. Sample:")
         print(json.dumps(docs[0][1] | {"abstract": docs[0][1]["abstract"][:90] + "…", "content": "…"}, indent=2))
