@@ -189,4 +189,12 @@ Voice Spaces (add through a hosted service last, and don't transcribe them), rea
 - Disclosure of the AI tools we used.
 - Everyone can explain the architecture and technical decisions.
 
+## Implemented Elastic database
+
+The Elastic project now has `conversations` plus the five historical indices above.
+The conversation store supports full transcript revisions and typed-interest semantic
+search for the native MVP described in PR #3. See [Elasticsearch setup](elasticsearch.md)
+for the pinned Jina model, setup commands, live validation, and API integration work.
+The Node.js adapter is not yet connected to the existing FastAPI service or Flutter app.
+
 *Drafted with Claude Code.*
