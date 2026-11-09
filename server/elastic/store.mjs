@@ -72,6 +72,8 @@ export class ConversationStore {
       return { id, accepted: true, revision: input.revision };
     } catch (error) {
       if (error.status === 409 && error.type === 'version_conflict_engine_exception') {
+        const current = await this.request('GET', `/conversations/_doc/${id}?_source_includes=revision`).catch(() => null);
+        if (current?._source?.revision === input.revision) return { id, accepted: true, revision: input.revision, duplicate: true };
         return { id, accepted: false, reason: 'stale_or_duplicate_revision' };
       }
       throw error;

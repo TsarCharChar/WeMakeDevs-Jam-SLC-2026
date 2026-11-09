@@ -14,15 +14,22 @@ test('revisions share one document and use strict external versioning', async ()
   const docs = new Map();
   const store = new ConversationStore(async (method, path, body) => {
     const url = new URL(path, 'https://example.com');
+    const old = docs.get(url.pathname);
+    if (method === 'GET') {
+      assert.equal(url.searchParams.get('_source_includes'), 'revision');
+      return { _source: { revision: old?.revision } };
+    }
     assert.equal(url.searchParams.get('version_type'), 'external');
     assert.equal(method, 'PUT');
-    const old = docs.get(url.pathname);
     if (old && old.revision >= body.revision) throw new ElasticError(409, 'version_conflict_engine_exception');
     docs.set(url.pathname, body);
   });
   assert.equal((await store.upsert(sample)).accepted, true);
   assert.equal((await store.upsert({ ...sample, revision: 1, transcript: 'Old partial' })).accepted, false);
-  assert.equal((await store.upsert(sample)).accepted, false);
+  assert.deepEqual(await store.upsert(sample), {
+    id: documentId(sample.conference, sample.handle, sample.conversationId),
+    accepted: true, revision: sample.revision, duplicate: true,
+  });
   assert.equal(docs.size, 1);
   assert.equal([...docs.values()][0].transcript, sample.transcript);
   assert.equal([...docs.values()][0].visibility, 'private');
