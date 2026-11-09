@@ -32,7 +32,43 @@ void main() {
     addTearDown(api.close);
     final results = await api.search('  AI & café?  ');
     expect(results.single.id, 'one');
-    expect(results.single.transcript, 'café ☕');
+    expect(results.single.isDemo, isTrue);
+    expect(results.single.sharedText, 'café ☕');
+  });
+
+  test('strips unshared attendee note text while preserving shared notes', () async {
+    final api = ConversationApi(
+      client: MockClient(
+        (_) async => http.Response(
+          jsonEncode({
+            'conversations': [
+              {
+                'id': 'private-1',
+                'conference': 'cnh',
+                'transcript': 'do not expose me',
+                'topics': ['eBPF'],
+                'why': 'Shared topic: eBPF',
+              },
+              {
+                'id': 'shared-1',
+                'conference': 'cnh',
+                'shared': true,
+                'transcript': 'explicitly shared note',
+                'topics': ['Wasm'],
+              },
+            ],
+          }),
+          200,
+        ),
+      ),
+    );
+    addTearDown(api.close);
+    final results = await api.search('eBPF');
+    expect(results[0].sharedText, isNull);
+    expect(results[0].topics, ['eBPF']);
+    expect(results[0].why, 'Shared topic: eBPF');
+    expect(results[1].shared, isTrue);
+    expect(results[1].sharedText, 'explicitly shared note');
   });
 
   test('empty results are valid', () async {

@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Record conversations you choose to transcribe on your device.</string>
+	<string>Record your own spoken notes for on-device transcription.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Conversation Garden</string>
+	<string>ConFellow</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -30,19 +30,13 @@
 	<true/>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Record conversations you choose to transcribe on your device.</string>
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<false/>
 		<key>UISceneConfigurations</key>
 		<dict>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Record conversations you choose to transcribe on your device.</string>
 			<key>UIWindowSceneSessionRoleApplication</key>
 			<array>
 				<dict>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>Record conversations you choose to transcribe on your device.</string>
 					<key>UISceneClassName</key>
 					<string>UIWindowScene</string>
 					<key>UISceneConfigurationName</key>

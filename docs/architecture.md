@@ -2,14 +2,15 @@
 
 ## Current MVP direction (supersedes conflicting sections below)
 
-The agreed MVP is a native Flutter app for Android and iOS. Its first screen has two blobs: **Press to record conversation** and **Find me conversations**.
+The agreed MVP is **ConFellow** — a native Flutter app for Android and iOS (with no web target or preview) centered on **"Find my wavelength"** in a high-contrast dark constellation style built for bright conference halls.
 
-- Recording uses bundled Whisper large-v3-turbo Q5_0 through whisper.cpp on the device and displays live transcript updates. Tap again to stop; the MVP retains the three-minute limit and stops recording when backgrounded.
-- Search accepts **typed interests** and calls the FastAPI `GET /querysession` endpoint. The backend currently restricts results to a synthetic demo conversation; the UI labels this limitation and displays actual returned transcripts. Attendee matching still needs backend authentication and access-control filters.
-- The FastAPI backend now implements full-transcript revision ingestion, Elasticsearch semantic indexing, search, deletion, and bounded retention cleanup. These APIs require a server-to-server bearer token; Flutter uploads and end-user authentication are not connected yet. Conversations are private by default and can explicitly opt into conference search. See [the vector backend contract](vector-backend.md) for setup, API payloads, and deployment prerequisites.
-- Whisper partials contain the full revised transcript. Ingestion replaces one document per conference/owner/conversation, rejects stale revisions, and handles identical retries without embedding again. Elasticsearch `semantic_text` uses the same explicit inference endpoint for indexing and search. Mobile ingestion should coalesce partials and send the final transcript when stopped.
-- Recording remains explicit and requires participants' permission. The current MVP keeps recorded transcripts in session memory only. Search sends typed interests to the backend; recordings are not uploaded.
-- The backend also exposes attendee profiles, approved one-line moments, the topic graph, conference search and personal alerts. These use the `people`, `moments`, `talks` and `alerts` indices with their own attendee tokens. See [the attendee API](attendee-api.md).
+- **Single-speaker notes, not conversation recording:** One attendee speaks (transcribed on-device to text) or types/pastes their own text notes — text is the only supported data type, with no file uploads in the UI. Because notes capture a single speaker's own thoughts rather than multi-party conversations, there is no multi-person consent prompt. Voice capture retains the three-minute limit, stops when backgrounded, never writes audio to disk, and centers the listening UI around a live waveform while on-device Whisper (`ggml-large-v3-turbo-q5_0.bin` via `whisper.cpp`) is evaluated on phone hardware.
+- **Phone session as profile (no onboarding or login gate):** Each phone generates and persists an opaque local session identifier (`owner_id`) that acts directly as the attendee's profile — no accounts, emails, passwords, or initial onboarding wall. Attendees land straight on the main experience, where selecting topics/talks from the bundled KubeCon North America schedule asset (retaining title, abstract, times, room, and tags, with speaker names omitted) or capturing notes immediately shapes their profile in Elasticsearch.
+- **Realtime private saving and separate note submission:** After explicit opt-in, spoken partial transcripts upload privately through the attendee-authenticated transcript API, with a durable retry queue and a final revision when recording stops. The radar UI preserves this behavior from `main`. When a note finishes, a compact card displays matched schedule topics (for example, `Tuned: eBPF, kernel security`, or `Note saved` when no schedule tag matches — never invented topics) with an **Undo** window for wavelength tuning and optional note sharing. A device-saved **Review before sending** setting (off by default) switches that submission card to explicit **Send** or **Discard**. Those actions do not cancel or delete already authorized private transcript uploads. Typed notes still use the review/Undo flow; they are not sent by the realtime recording queue.
+- **Privacy on search and discovery:** Every sent note participates in semantic matching, **but other attendees see only matched topics and why it matched in words — never a note's text unless the author explicitly chose "Share this note."** Both backend search endpoints and the single Flutter backend seam must omit note text unless explicitly shared.
+- **Map and Space UX rules:** The UI refers to **notes** (never *conversations*), never displays match percentages (closeness is communicated spatially on concentric rings around the user with gentle drift), and never claims physical location (*nearby*). Tapping a Space opens a discovery sheet first — explaining in words why it is on your wavelength, showing talk room and time with an **I'm going** toggle, showing attendee counts rather than handles until someone enters a room, and listing recent topics — while `/rooms` text chat stays behind a feature flag as a stretch goal.
+- **Backend boundary and secrets:** Flutter communicates only through one Dart backend interface configured solely with the HTTPS backend origin (`API_BASE_URL`), never shipping Elasticsearch credentials in the client. The FastAPI vector backend (`docs/vector-backend.md`) and `server/elastic` store handle embeddings and retention on the server.
+- The backend also exposes attendee profiles, approved one-line moments, the topic graph, conference search and personal alerts. These use the `people`, `moments`, `talks` and `alerts` indices with their own attendee tokens. See [the attendee API](attendee-api.md) and [the realtime transcript contract](transcript-api.md).
 
 The original hackathon sketch below remains as historical backend context; its mobile-web-only and no-native-app scope no longer describes the chosen frontend.
 
@@ -27,7 +28,7 @@ Conference attendees tell the app what they care about: the talks on their sched
 
 - **No passive listening.** The app only hears someone who pressed the button. If another person joins a recording, they agree on their own phone. About a dozen US states require every participant's consent, so we use this one rule everywhere. (Not legal advice.)
 - **Nothing is shared until the person approves it.**
-- **We keep summaries, not sources.** Audio, transcripts, note files and page contents are discarded. We store only approved one-line gists and topics.
+- **We keep summaries, not sources, unless the owner opts in.** Audio, note files and page contents are discarded. Transcript text is stored only after opt-in, stays private by default, and reaches other attendees only when its owner shares a finalized segment after confirming everyone recorded agreed.
 - **Elasticsearch is the only datastore.**
 - **Handles, not accounts.** No emails or passwords.
 
@@ -203,7 +204,11 @@ setup commands, and live validation of that existing schema. The public FastAPI
 The authenticated FastAPI vector API uses a separately provisioned
 `conversation-garden-conversations` alias with its own schema, revision protection,
 and retention cleanup. See [the vector backend contract](vector-backend.md).
-It does not consume the Node.js adapter, migrate the existing indices, or connect
-Flutter recordings to ingestion; Flutter search continues to use `/querysession`.
+It does not consume the Node.js adapter or migrate the existing indices.
+Flutter private recording ingestion uses the separate attendee-authenticated
+`/transcripts` routes backed by the existing `conversations` index. The radar's
+local schedule profile and optional live discovery adapter remain separate from
+the secure private-transcript session; this conflict resolution does not migrate
+their identities. Flutter demo search continues to use `/querysession`.
 
 *Drafted with Claude Code.*
