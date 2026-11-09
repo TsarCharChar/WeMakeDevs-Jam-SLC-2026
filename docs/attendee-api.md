@@ -8,6 +8,7 @@ Base URL: `https://grindset.cnh.radarhq.io`. All examples are synthetic.
 | `POST /moments` | Attendee token | Publish one approved gist |
 | `GET /graph` | Attendee token | Topic nodes and edges |
 | `GET /search` | Attendee token | Search talks and moments |
+| `GET /recommendations` | Attendee token | Talks and moments ranked by the attendee's own notes and profile |
 | `GET /feed` | Attendee token | The attendee's own alerts |
 | `PUT /transcripts/{stream_id}/segments/{sequence}` | Attendee token | Save a partial or final private transcript segment |
 | `GET /transcripts/{stream_id}/segments/{sequence}` | Attendee token | Read the latest saved segment revision |
@@ -175,6 +176,45 @@ Requires the token. Query: `q` (required, 1-200 characters), `conference` (requi
 ```
 
 Results are best match first. Use `type` to choose the layout, and treat absent fields as not available. Scores are only for ordering. `mode` is `keyword` when semantic search was unavailable; in that mode moments match only on an exact topic. Moments never include the author's handle.
+
+## GET /recommendations
+
+Requires the token. Query: `limit` (1-50, default 10), `conference` (optional, must match the token's conference).
+
+The server reads the caller's own five most recent **finalized** transcript segments (see the
+[transcript contract](transcript-api.md)) and the `interests` and `topics` from their profile, and ranks talks and
+moments against them. Nothing has to be sent: the note text is already in Elasticsearch, so it never travels in a URL.
+The caller's own moments are left out.
+
+`GET /recommendations?limit=10`
+
+```json
+{
+  "conference": "cnh",
+  "mode": "hybrid",
+  "based_on": {"notes": 2, "topics": ["eBPF"], "interests": true},
+  "results": [
+    {
+      "type": "talk",
+      "id": "talk-42",
+      "score": 8.5,
+      "topics": ["eBPF"],
+      "title": "eBPF in production",
+      "abstract": "Tracing without restarts.",
+      "speakers": ["Grace"],
+      "room": "Hall A",
+      "start": "2026-11-10T10:00:00Z",
+      "end": "2026-11-10T10:30:00Z"
+    }
+  ]
+}
+```
+
+`results` has the same shape as `GET /search`. `based_on` says what the ranking used, so the app can explain it in
+words; it holds counts and the caller's own topics, never note text. `mode` is `keyword` when semantic ranking was
+unavailable or when only topics were available. With no finalized notes, no interests and no topics, `results` is
+empty and no content search runs. Partial segments are ignored, so a recording counts once it is finalized. Notes stay
+private: only the token's own attendee is ever read, and the response carries no handle.
 
 ## GET /feed
 
