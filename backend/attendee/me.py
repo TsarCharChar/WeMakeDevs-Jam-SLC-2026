@@ -8,6 +8,7 @@ from backend.attendee.auth import (
     Attendee,
     current_attendee,
     hash_token,
+    is_expired,
     issue_token,
     parse_bearer,
     person_id,
@@ -70,10 +71,12 @@ def put_me(
         raise StoreError(401, INVALID_TOKEN)
 
     saved = previous["_source"] if previous else {}
+    # Expired profiles count as deleted: keep the claim, not the old data.
+    kept = {} if previous is None or is_expired(saved) else saved
 
     def chosen(field: str, default):
         value = getattr(body, field)
-        return saved.get(field, default) if value is None else value
+        return kept.get(field, default) if value is None else value
 
     now = utcnow()
     new_token = None if previous else issue_token(doc_id)

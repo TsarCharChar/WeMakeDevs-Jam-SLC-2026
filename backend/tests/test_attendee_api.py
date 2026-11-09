@@ -312,6 +312,20 @@ def test_profile_update_with_only_required_fields_changes_nothing_else(client, e
     assert stored["interests"] == "eBPF" and stored["topics"] == ["eBPF"] and stored["display_name"] == "Ada"
 
 
+def test_expired_profile_update_does_not_restore_saved_fields(client, elastic):
+    headers = register(client, display_name="Ada", starred_talks=["talk-1"])
+    elastic.stored_person()["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+
+    response = client.put("/me", json={"handle": "ada", "conference": CONFERENCE}, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json()["topics"] == [] and response.json()["starred_talks"] == []
+    assert response.json()["interests"] == "" and "display_name" not in response.json()
+    stored = elastic.stored_person()
+    assert stored["topics"] == [] and stored["starred_talks"] == []
+    assert "interests" not in stored and "display_name" not in stored
+
+
 def test_profile_update_can_clear_fields_but_keeps_name(client, elastic):
     headers = register(client, display_name="Ada", starred_talks=["talk-1"])
     body = PROFILE | {"interests": "", "topics": [], "starred_talks": []}
