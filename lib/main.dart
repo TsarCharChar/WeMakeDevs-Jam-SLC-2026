@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 
 import 'recording_controller.dart';
 import 'search_screen.dart';
+import 'cloud_sync_panel.dart';
+import 'transcript_sync.dart';
 
 export 'search_screen.dart';
 
@@ -25,17 +27,21 @@ class ConversationApp extends StatelessWidget {
 }
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.sync});
+  final TranscriptSync? sync;
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   late final RecordingController recording;
+  late final TranscriptSync sync;
   @override
   void initState() {
     super.initState();
-    recording = RecordingController();
+    sync = widget.sync ?? TranscriptSync();
+    recording = RecordingController(sync: sync);
+    unawaited(sync.initialize());
     WidgetsBinding.instance.addObserver(this);
   }
 
@@ -45,18 +51,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         state == AppLifecycleState.detached) {
       unawaited(recording.stop());
     }
+    if (state == AppLifecycleState.resumed && sync.hasPending) {
+      unawaited(sync.retry());
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     recording.dispose();
+    if (widget.sync == null) {
+      unawaited(recording.closed.whenComplete(sync.dispose));
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: recording,
+    listenable: Listenable.merge([recording, sync]),
     builder: (context, _) {
       final active = recording.phase == RecordingPhase.recording;
       return Scaffold(
@@ -117,7 +129,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           ? 'Listening · up to 3 minutes'
                           : 'Let your ideas take root',
                       busy: recording.busy,
-                      onTap: recording.busy
+                      onTap: recording.busy || !active && !sync.canBegin
                           ? null
                           : () => active ? recording.stop() : recording.start(),
                     ),
@@ -129,6 +141,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         fontSize: 12,
                         color: Color(0xFF69716A),
                       ),
+                    ),
+                    const SizedBox(height: 20),
+                    CloudSyncPanel(
+                      sync: sync,
+                      recording: recording.phase != RecordingPhase.idle,
                     ),
                     const SizedBox(height: 20),
                     BlobButton(
@@ -184,7 +201,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     ],
                     const SizedBox(height: 20),
                     const Text(
-                      'Only record with everyone’s permission.\nRecordings stay on your phone. Search sends your typed interests to our server.',
+                      'Only record with everyone’s permission.\nAudio stays on your phone. With realtime saving enabled, transcript text uploads privately while you record. Search sends your typed interests to our server.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 11,

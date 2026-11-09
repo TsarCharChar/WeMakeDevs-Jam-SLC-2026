@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:conversation_garden/main.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUp(() {
+    FlutterSecureStorage.setMockInitialValues({});
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(
           const MethodChannel('com.llfbandit.record/messages'),
@@ -16,6 +18,7 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(const ConversationApp());
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Press to record\nconversation'));
     await tester.pumpAndSettle();
     expect(find.textContaining('Enable microphone access'), findsOneWidget);

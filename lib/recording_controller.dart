@@ -8,14 +8,22 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:whisper_ggml/whisper_ggml.dart';
 
+import 'attendee_api.dart';
+import 'transcript_sync.dart';
+
 enum RecordingPhase { idle, preparing, recording, stopping }
 
 class RecordingController extends ChangeNotifier {
+  RecordingController({this.sync});
+  final TranscriptSync? sync;
+  Future<void> closed = Future.value();
   final _recorder = AudioRecorder();
   WhisperLiveSession? _session;
   StreamSubscription<Uint8List>? _audio;
   StreamSubscription<String>? _text;
   Timer? _limit;
+  Future<void>? _finishing;
+  Completer<void>? _preparation;
   bool _disposed = false, _cancelled = false;
   RecordingPhase phase = RecordingPhase.idle;
   String transcript = '', status = 'Your next good conversation starts here.';
@@ -55,6 +63,7 @@ class RecordingController extends ChangeNotifier {
   Future<void> start() async {
     if (phase != RecordingPhase.idle) return;
     phase = RecordingPhase.preparing;
+    _preparation = Completer<void>();
     _cancelled = false;
     transcript = '';
     error = null;
@@ -64,6 +73,7 @@ class RecordingController extends ChangeNotifier {
       if (!await _recorder.hasPermission()) {
         throw StateError('Enable microphone access in your device settings.');
       }
+      await sync?.begin();
       final path = await _model();
       if (_cancelled || _disposed) return;
       status = 'Loading Whisper on your device…';
@@ -73,7 +83,9 @@ class RecordingController extends ChangeNotifier {
       _text = _session!.partials.listen(
         (value) {
           transcript = value;
+          sync?.updateText(value);
           update();
+          if (value.runes.length >= 18000) unawaited(stop());
         },
         onError: (Object e) {
           error = 'Transcription interrupted: $e';
@@ -99,12 +111,15 @@ class RecordingController extends ChangeNotifier {
       status = 'Listening on this device · tap to stop';
       _limit = Timer(const Duration(minutes: 3), () => unawaited(stop()));
     } catch (e) {
-      error = 'Could not start recording: $e';
+      error = e is AttendeeApiException
+          ? e.message
+          : 'Could not start recording: $e';
       _cancelled = true;
     } finally {
       if (_cancelled || _disposed) {
         try {
           await _cleanup();
+          await sync?.finish(transcript);
         } catch (e) {
           error ??= 'Could not finish: $e';
         }
@@ -113,6 +128,7 @@ class RecordingController extends ChangeNotifier {
         if (_disposed) await _recorder.dispose();
       }
       update();
+      _preparation?.complete();
     }
   }
 
@@ -126,30 +142,43 @@ class RecordingController extends ChangeNotifier {
     final session = _session;
     _session = null;
     try {
-      if (session != null) transcript = await session.stop();
+      if (session != null) {
+        final finalText = await session.stop();
+        if (finalText.trim().isNotEmpty) transcript = finalText;
+      }
     } finally {
       await _text?.cancel();
       _text = null;
     }
   }
 
-  Future<void> stop() async {
+  Future<void> stop() {
     if (phase == RecordingPhase.preparing) {
       _cancelled = true;
-      return;
+      return Future.value();
     }
-    if (phase != RecordingPhase.recording) return;
+    if (phase == RecordingPhase.stopping) return _finishing!;
+    if (phase != RecordingPhase.recording) return Future.value();
     phase = RecordingPhase.stopping;
     status = 'Finishing your transcript…';
+    _finishing = _finish();
     update();
+    return _finishing!;
+  }
+
+  Future<void> _finish() async {
     try {
       await _cleanup();
     } catch (e) {
       error = 'Could not finish transcription: $e';
+    } finally {
+      await sync?.finish(transcript);
     }
     phase = RecordingPhase.idle;
     status = transcript.isEmpty
         ? 'No speech detected. Try again.'
+        : sync?.enabled == true
+        ? 'Conversation captured · check cloud saving status below'
         : 'Conversation captured · kept for this session';
     update();
   }
@@ -158,10 +187,14 @@ class RecordingController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _cancelled = true;
-    if (phase != RecordingPhase.preparing) {
-      unawaited(
-        _cleanup().catchError((Object _) {}).whenComplete(_recorder.dispose),
-      );
+    if (phase == RecordingPhase.preparing) {
+      closed = _preparation!.future;
+    } else {
+      closed = (phase == RecordingPhase.stopping ? _finishing! : _cleanup())
+          .then((_) => sync?.finish(transcript))
+          .catchError((Object _) {})
+          .whenComplete(_recorder.dispose);
+      unawaited(closed);
     }
     super.dispose();
   }

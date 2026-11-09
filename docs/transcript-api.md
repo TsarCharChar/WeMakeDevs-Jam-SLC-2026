@@ -129,8 +129,14 @@ This is realtime HTTP ingestion: uploads can happen during recording without
 waiting for its end. It is not a WebSocket/SSE broadcast. Network, index refresh
 and semantic inference determine acknowledgement latency, so no fixed subsecond
 latency is promised. Text upload does not offload Whisper inference from the device.
-The Flutter upload queue is a separate integration task; adding these routes does
-not make existing app builds start uploading.
+The Flutter client implements this contract in `lib/attendee_api.dart` and
+`lib/transcript_sync.dart`. Enable realtime saving in the app and consent before
+recording. The queue persists exact pending payloads in platform secure storage,
+coalesces newer text, stops after five transient failures, reconciles 409 using a
+segment read, and recovers interrupted recordings on restart. It holds at most
+eight pending segments. `Saved transcripts` reads paginated history for the
+device's stream. Rebuild/reinstall Flutter to get these changes; deploying the
+backend alone does not update an installed app.
 
 ## Privacy, retention and operations
 
