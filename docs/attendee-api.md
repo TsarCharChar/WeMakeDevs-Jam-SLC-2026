@@ -5,6 +5,7 @@ Base URL: `https://grindset.cnh.radarhq.io`. All examples are synthetic.
 | Endpoint | Auth | Purpose |
 | --- | --- | --- |
 | `PUT /me` | None to claim a handle, attendee token to update | Create or update a profile |
+| `GET /me` | Attendee token | Read the attendee's own profile |
 | `POST /moments` | Attendee token | Publish one approved gist |
 | `GET /graph` | Attendee token | Topic nodes and edges |
 | `GET /search` | Attendee token | Search talks and moments |
@@ -51,16 +52,22 @@ Errors are `{"detail": "message"}`, except 422, where `detail` is a list of `{lo
 | --- | --- |
 | `handle` | Required, 2-32 characters: letters, digits, `_`, `-`, starting with a letter or digit |
 | `conference` | Required, letters, digits, `_`, `-`, up to 128 characters |
+| `display_name` | Optional, the attendee's name, 1-60 characters, any language, one line |
 | `interests` | Optional, up to 1000 characters |
 | `topics` | Optional, up to 20, each up to 64 characters; case-variant duplicates are merged |
 | `starred_talks` | Optional, up to 100 talk IDs |
 
-Each call replaces the whole profile and extends its expiry to seven days from now, so send every field.
+On an update, a field you leave out keeps its saved value. A field you send replaces it, and `""` or `[]` clears `interests`, `topics` or `starred_talks`. Each call extends the profile's expiry to seven days from now.
+
+Interests can be typed or spoken. For spoken interests, transcribe on the device and send the text as `interests`, capped at 1000 characters. The backend never receives audio.
+
+Before any app sends `display_name`, apply `backend/mappings/people-display-name.json` to the live index: run `PUT people/_mapping` in Kibana Dev Tools with that file's contents as the body. Until then, requests with a name return 503.
 
 ```json
 {
-  "handle": "ada",
+  "handle": "cf_a1b2c3d4e5f6a7b8c9d0",
   "conference": "cnh",
+  "display_name": "Ada Lovelace",
   "interests": "eBPF tracing and autoscaling",
   "topics": ["eBPF", "Kubernetes"],
   "starred_talks": ["talk-42"]
@@ -71,8 +78,9 @@ Response `201` when created, `200` when updated. `token` appears only on creatio
 
 ```json
 {
-  "handle": "ada",
+  "handle": "cf_a1b2c3d4e5f6a7b8c9d0",
   "conference": "cnh",
+  "display_name": "Ada Lovelace",
   "interests": "eBPF tracing and autoscaling",
   "topics": ["eBPF", "Kubernetes"],
   "starred_talks": ["talk-42"],
@@ -84,6 +92,10 @@ Response `201` when created, `200` when updated. `token` appears only on creatio
 ```
 
 Without a token an existing handle returns 409. Changing a handle is not supported: claim the new handle without a token instead.
+
+## GET /me
+
+Requires the token. Returns the same fields as `PUT /me`, without `created` and `token`, so the app can restore a profile after a restart. `display_name` is absent if none was saved.
 
 ## POST /moments
 

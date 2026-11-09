@@ -1,5 +1,7 @@
 import copy
+import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import Mock, create_autospec
 
 import pytest
@@ -255,6 +257,118 @@ def test_put_me_write_failure_does_not_return_token(client, elastic):
     response = client.put("/me", json=PROFILE)
     assert response.status_code == 503
     assert "token" not in response.json()
+
+
+def test_profile_name_is_stored_and_returned(client, elastic):
+    response = client.put("/me", json=PROFILE | {"display_name": "  Ada Lovelace "})
+    assert response.status_code == 201
+    assert response.json()["display_name"] == "Ada Lovelace"
+    assert elastic.stored_person()["display_name"] == "Ada Lovelace"
+
+
+def test_profile_name_is_optional(client, elastic):
+    response = client.put("/me", json=PROFILE)
+    assert response.status_code == 201
+    assert "display_name" not in response.json()
+    assert "display_name" not in elastic.stored_person()
+
+
+@pytest.mark.parametrize("name", ["José Núñez", "李小龙", "Ada 🚀", "O'Brien-Smith"])
+def test_profile_name_accepts_any_language(client, elastic, name):
+    assert client.put("/me", json=PROFILE | {"display_name": name}).json()["display_name"] == name
+
+
+@pytest.mark.parametrize("name", ["", "   ", "x" * 61, "Ada\nLovelace", "Ada\x07", 5])
+def test_profile_name_rejects_invalid_values(client, elastic, name):
+    assert client.put("/me", json=PROFILE | {"display_name": name}).status_code == 422
+    assert not elastic.people
+
+
+def test_profile_starts_empty_when_optional_fields_are_left_out(client, elastic):
+    response = client.put("/me", json={"handle": "ada", "conference": CONFERENCE})
+    body = response.json()
+    assert response.status_code == 201
+    assert body["interests"] == "" and body["topics"] == [] and body["starred_talks"] == []
+    assert "interests" not in elastic.stored_person()
+    assert elastic.stored_person()["topics"] == []
+
+
+def test_profile_update_keeps_fields_left_out(client, elastic):
+    headers = register(client, display_name="Ada", starred_talks=["talk-1"])
+    body = {"handle": "ada", "conference": CONFERENCE, "interests": "Rust"}
+    response = client.put("/me", json=body, headers=headers)
+    assert response.status_code == 200
+    saved = response.json()
+    assert saved["interests"] == "Rust" and saved["display_name"] == "Ada"
+    assert saved["topics"] == ["eBPF"] and saved["starred_talks"] == ["talk-1"]
+    assert elastic.stored_person()["display_name"] == "Ada"
+    assert elastic.stored_person()["starred_talks"] == ["talk-1"]
+
+
+def test_profile_update_with_only_required_fields_changes_nothing_else(client, elastic):
+    headers = register(client, display_name="Ada")
+    client.put("/me", json={"handle": "ada", "conference": CONFERENCE}, headers=headers)
+    stored = elastic.stored_person()
+    assert stored["interests"] == "eBPF" and stored["topics"] == ["eBPF"] and stored["display_name"] == "Ada"
+
+
+def test_profile_update_can_clear_fields_but_keeps_name(client, elastic):
+    headers = register(client, display_name="Ada", starred_talks=["talk-1"])
+    body = PROFILE | {"interests": "", "topics": [], "starred_talks": []}
+    response = client.put("/me", json=body, headers=headers)
+    assert response.json()["interests"] == "" and response.json()["topics"] == []
+    assert "interests" not in elastic.stored_person()
+    assert elastic.stored_person()["starred_talks"] == []
+    assert elastic.stored_person()["display_name"] == "Ada"
+
+
+def test_profile_update_can_change_name(client, elastic):
+    headers = register(client, display_name="Ada")
+    client.put("/me", json=PROFILE | {"display_name": "Grace"}, headers=headers)
+    assert elastic.stored_person()["display_name"] == "Grace"
+
+
+def test_people_mapping_declares_display_name():
+    path = Path(__file__).parents[1] / "mappings" / "people-display-name.json"
+    field = json.loads(path.read_text())["properties"]["display_name"]
+    assert field == {"type": "keyword", "index": False, "doc_values": False}
+
+
+def test_get_me_requires_token(client, elastic):
+    assert client.get("/me").status_code == 401
+    assert elastic.calls == 0
+
+
+def test_get_me_returns_saved_profile_without_secrets(client, elastic):
+    headers = register(client, display_name="Ada Lovelace", starred_talks=["talk-1"])
+    response = client.get("/me", headers=headers)
+    body = response.json()
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    assert body["handle"] == "ada" and body["display_name"] == "Ada Lovelace"
+    assert body["interests"] == "eBPF" and body["topics"] == ["eBPF"] and body["starred_talks"] == ["talk-1"]
+    assert not {"token", "token_hash", "created"} & set(body)
+    assert elastic.stored_person()["token_hash"] not in response.text
+
+
+def test_get_me_only_reads_the_callers_profile(client, elastic):
+    register(client, display_name="Ada")
+    other = register(client, handle="grace", display_name="Grace")
+    assert client.get("/me", headers=other).json()["display_name"] == "Grace"
+
+
+def test_get_me_rejects_expired_profile(client, elastic):
+    headers = register(client)
+    elastic.stored_person()["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    assert client.get("/me", headers=headers).status_code == 401
+
+
+def test_get_me_elastic_failure_does_not_leak(client, elastic):
+    headers = register(client)
+    elastic.client.get.side_effect = failure()
+    response = client.get("/me", headers=headers)
+    assert response.status_code == 503
+    assert LEAK not in response.text
 
 
 def test_endpoints_report_unconfigured_elastic(monkeypatch):

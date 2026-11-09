@@ -7,6 +7,7 @@ from backend.models import Identifier, Input
 Handle = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{1,31}$")]
 Topic = Annotated[str, StringConstraints(min_length=1, max_length=64, pattern=r"^[^\x00-\x1f\x7f]+$")]
 TalkId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")]
+DisplayName = Annotated[str, StringConstraints(min_length=1, max_length=60, pattern=r"^[^\x00-\x1f\x7f]+$")]
 StoredDate = str | int | None
 
 
@@ -25,19 +26,25 @@ def distinct(values: list[str]) -> list[str]:
 class ProfileWrite(Input):
     handle: Handle
     conference: Identifier
-    interests: str = Field(default="", max_length=1000)
-    topics: Annotated[list[Topic], Field(max_length=20), AfterValidator(distinct_topics)] = []
-    starred_talks: Annotated[list[TalkId], Field(max_length=100), AfterValidator(distinct)] = []
+    display_name: DisplayName | None = None
+    # None means the field was left out, so updates can keep what is saved.
+    interests: str | None = Field(default=None, max_length=1000)
+    topics: Annotated[list[Topic], Field(max_length=20), AfterValidator(distinct_topics)] | None = None
+    starred_talks: Annotated[list[TalkId], Field(max_length=100), AfterValidator(distinct)] | None = None
 
 
-class ProfileResponse(BaseModel):
+class ProfileRead(BaseModel):
     handle: str
     conference: str
+    display_name: str | None = None
     interests: str
     topics: list[str]
     starred_talks: list[str]
     last_active: str
     expires_at: str
+
+
+class ProfileResponse(ProfileRead):
     created: bool
     token: str | None = None
 
