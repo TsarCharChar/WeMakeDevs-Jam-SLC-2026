@@ -174,7 +174,6 @@ def transcript_history(
         {"term": {"handle": attendee.handle}},
         {"prefix": {"conversation_id": stream_prefix(attendee, stream_id)}},
         {"term": {"consent": True}},
-        {"term": {"visibility": "private"}},
         {"range": {"expires_at": {"gt": "now"}}},
     ]
     if after is not None:

@@ -113,6 +113,75 @@ to observe changes to an earlier partial. Pagination is not a snapshot; a delaye
 upload with an earlier sequence is visible when the client reloads from the start.
 Render or join the segments in order to show the accumulated transcript.
 
+## PUT /transcripts/{stream_id}/segments/{sequence}/sharing
+
+Requires the owner's attendee token. Segments are private until the owner shares
+them, one finalized segment at a time.
+
+```json
+{"shared": true, "participants_consented": true}
+```
+
+- `shared`: required strict boolean. Send `{"shared": false}` to unshare, which
+  removes the segment from matches immediately.
+- `participants_consented`: must be `true` when sharing. Show the owner the full
+  text and ask them to confirm everyone recorded agreed. The server records the
+  owner's statement and cannot verify other speakers' agreement.
+
+Success is HTTP 200: `{"stream_id": "device-stream", "sequence": 0, "shared": true}`.
+Repeating the same request is safe. Sharing does not change the segment's expiry.
+
+| Status | Meaning |
+| --- | --- |
+| 401 | Missing, forged or expired attendee token |
+| 404 | The segment does not exist for this attendee, or expired |
+| 409 | The segment is not finalized, or it changed during the request |
+| 422 | Invalid body, or sharing without `participants_consented: true` |
+| 503 | Storage unavailable; retry later |
+
+## POST /matches
+
+Requires the attendee token. Finds other attendees' shared, finalized, unexpired
+transcript segments in the same conference. The attendee's own segments are never
+returned.
+
+```json
+{"conference": "cnh", "interests": "scaling container workloads", "limit": 10, "min_score": 0}
+```
+
+- `conference`: required, must match the token's conference.
+- `interests`: optional, 1-500 characters. When omitted, the saved `PUT /me`
+  interests are used. If neither exists the response is 422.
+- `limit`: optional, 1-20, default 10.
+- `min_score`: optional, 0-1, default 0. Tune it with relevant and irrelevant
+  examples before presenting results as recommendations.
+
+Success is HTTP 200, best match first:
+
+```json
+{
+  "matches": [
+    {
+      "id": "6f1c...-0000000000",
+      "excerpt": "We compared Kubernetes autoscaling strategies.",
+      "topics": [],
+      "updated_at": "2026-11-09T20:00:00Z",
+      "score": 0.89,
+      "similarity": 0.78
+    }
+  ]
+}
+```
+
+`excerpt` is the first 500 characters of the segment. Authors' handles are never
+returned. `score` is Elasticsearch's score and `similarity` is its cosine
+equivalent (`2 * score - 1`). Long transcripts are chunked, so both reflect the
+best-matching chunk. Elasticsearch embeds the interests and compares vectors
+itself, and an embedding failure returns 503.
+
+Errors: 401 for a bad token, 403 for another conference, 422 for invalid input or
+no interests, 503 when storage or embedding is unavailable.
+
 ## Flutter integration
 
 1. Obtain/store the attendee token, stream ID and next segment number securely.
@@ -141,8 +210,10 @@ backend alone does not update an installed app.
 ## Privacy, retention and operations
 
 Every read/write is scoped to the token's conference and handle. Documents are
-private with consent recorded; no transcript is published through `/moments`,
-`/graph` or `/search`. Existing public `/querysession` remains restricted to its
+private with consent recorded unless their owner shares a finalized segment; a
+shared segment is readable through `/matches` by any attendee with a token for that
+conference, and handles are self-service, so a token does not prove attendance. No
+transcript is published through `/moments`, `/graph` or `/search`. Existing public `/querysession` remains restricted to its
 synthetic test document. Successful transcript responses use `Cache-Control:
 no-store`. Validation and database errors do not echo submitted text or keys.
 

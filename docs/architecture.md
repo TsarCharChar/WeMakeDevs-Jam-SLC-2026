@@ -28,7 +28,7 @@ Conference attendees tell the app what they care about: the talks on their sched
 
 - **No passive listening.** The app only hears someone who pressed the button. If another person joins a recording, they agree on their own phone. About a dozen US states require every participant's consent, so we use this one rule everywhere. (Not legal advice.)
 - **Nothing is shared until the person approves it.**
-- **We keep summaries, not sources.** Audio, transcripts, note files and page contents are discarded. We store only approved one-line gists and topics.
+- **We keep summaries, not sources, unless the owner opts in.** Audio, note files and page contents are discarded. Transcript text is stored only after opt-in, stays private by default, and reaches other attendees only when its owner shares a finalized segment after confirming everyone recorded agreed.
 - **Elasticsearch is the only datastore.**
 - **Handles, not accounts.** No emails or passwords.
 
