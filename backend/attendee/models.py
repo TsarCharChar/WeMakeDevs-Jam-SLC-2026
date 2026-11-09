@@ -93,7 +93,7 @@ class SearchHit(BaseModel):
     at: StoredDate = None
 
 
-class PublicSearchResponse(BaseModel):
+class ContentSearchResponse(BaseModel):
     query: str
     conference: str
     mode: Literal["hybrid", "keyword"]

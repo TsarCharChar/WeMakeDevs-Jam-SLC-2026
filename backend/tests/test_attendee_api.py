@@ -259,10 +259,11 @@ def test_put_me_write_failure_does_not_return_token(client, elastic):
 
 def test_endpoints_report_unconfigured_elastic(monkeypatch):
     monkeypatch.setattr("backend.attendee.elastic.get_elasticsearch_client", lambda: None)
+    token = bearer(person_id(CONFERENCE, "ada") + "." + "a" * 43)
     with TestClient(create_app(Settings())) as client:
         assert client.put("/me", json=PROFILE).status_code == 503
-        assert client.get("/graph", params={"conference": CONFERENCE}).status_code == 503
-        assert client.get("/search", params={"conference": CONFERENCE, "q": "ai"}).status_code == 503
+        assert client.get("/graph", params={"conference": CONFERENCE}, headers=token).status_code == 503
+        assert client.get("/search", params=SEARCH, headers=token).status_code == 503
 
 
 def test_moment_requires_authentication(client, elastic):
@@ -380,7 +381,7 @@ def graph_response():
 
 def test_graph_returns_nodes_and_deduplicated_edges(client, elastic):
     elastic.client.search.return_value = graph_response()
-    response = client.get("/graph", params={"conference": CONFERENCE})
+    response = client.get("/graph", params={"conference": CONFERENCE}, headers=register(client))
     assert response.status_code == 200
     assert response.json() == {
         "conference": CONFERENCE,
@@ -397,7 +398,7 @@ def test_graph_returns_nodes_and_deduplicated_edges(client, elastic):
 
 
 def test_graph_never_requests_attendee_documents(client, elastic):
-    client.get("/graph", params={"conference": CONFERENCE})
+    client.get("/graph", params={"conference": CONFERENCE}, headers=register(client))
     call = elastic.client.search.call_args.kwargs
     assert call["size"] == 0
     assert "people" not in call["index"] and "alerts" not in call["index"]
@@ -405,28 +406,57 @@ def test_graph_never_requests_attendee_documents(client, elastic):
 
 
 def test_graph_empty_when_indices_are_missing(client, elastic):
-    response = client.get("/graph", params={"conference": CONFERENCE})
+    response = client.get("/graph", params={"conference": CONFERENCE}, headers=register(client))
     assert response.status_code == 200
     assert response.json()["nodes"] == [] and response.json()["edges"] == []
 
 
 @pytest.mark.parametrize("params", [{}, {"conference": "*"}, {"conference": CONFERENCE, "limit": 101}])
 def test_graph_rejects_invalid_input(client, elastic, params):
-    assert client.get("/graph", params=params).status_code == 422
+    assert client.get("/graph", params=params, headers=register(client)).status_code == 422
+    elastic.client.search.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("path", "params"),
+    [("/graph", {"conference": CONFERENCE}), ("/search", {"conference": CONFERENCE, "q": "ai"})],
+)
+def test_reads_require_a_valid_token(client, elastic, path, params):
+    register(client)
+    forged = bearer(person_id(CONFERENCE, "ada") + "." + "a" * 43)
+    elastic.client.reset_mock(side_effect=False)
+    assert client.get(path, params=params).status_code == 401
     assert elastic.calls == 0
+    assert client.get(path, params=params, headers=forged).status_code == 401
+    elastic.client.search.assert_not_called()
+
+
+@pytest.mark.parametrize(("path", "extra"), [("/graph", {}), ("/search", {"q": "ai"})])
+def test_reads_reject_another_conference(client, elastic, path, extra):
+    params = {"conference": "other"} | extra
+    assert client.get(path, params=params, headers=register(client)).status_code == 403
+    elastic.client.search.assert_not_called()
+
+
+@pytest.mark.parametrize(("path", "extra"), [("/graph", {}), ("/search", {"q": "ai"})])
+def test_reads_reject_expired_profile(client, elastic, path, extra):
+    headers = register(client)
+    elastic.stored_person()["expires_at"] = (datetime.now(UTC) - timedelta(seconds=1)).isoformat()
+    assert client.get(path, params={"conference": CONFERENCE} | extra, headers=headers).status_code == 401
+    elastic.client.search.assert_not_called()
 
 
 @pytest.mark.parametrize("result", [failure(), ConnectionError(LEAK)])
 def test_graph_elastic_failure_does_not_leak(client, elastic, result):
     elastic.client.search.side_effect = result
-    response = client.get("/graph", params={"conference": CONFERENCE})
+    response = client.get("/graph", params={"conference": CONFERENCE}, headers=register(client))
     assert response.status_code == 503
     assert LEAK not in response.text
 
 
 def test_graph_partial_result_is_not_success(client, elastic):
     elastic.client.search.return_value = EMPTY | {"timed_out": True}
-    assert client.get("/graph", params={"conference": CONFERENCE}).status_code == 503
+    assert client.get("/graph", params={"conference": CONFERENCE}, headers=register(client)).status_code == 503
 
 
 SEARCH_HITS = [
@@ -448,7 +478,7 @@ SEARCH = {"conference": CONFERENCE, "q": "eBPF"}
 
 def test_search_returns_ranked_results_with_types(client, elastic):
     elastic.client.search.return_value = EMPTY | {"hits": {"hits": SEARCH_HITS}}
-    response = client.get("/search", params=SEARCH)
+    response = client.get("/search", params=SEARCH, headers=register(client))
     body = response.json()
     assert response.status_code == 200
     assert body["mode"] == "hybrid"
@@ -462,7 +492,7 @@ def test_search_returns_ranked_results_with_types(client, elastic):
 
 
 def test_search_filters_conference_and_never_requests_handles(client, elastic):
-    client.get("/search", params=SEARCH)
+    client.get("/search", params=SEARCH, headers=register(client))
     call = elastic.client.search.call_args.kwargs
     assert {"term": {"conference": CONFERENCE}} in filters(elastic)
     assert call["index"] == "talks,moments"
@@ -472,7 +502,7 @@ def test_search_filters_conference_and_never_requests_handles(client, elastic):
 
 def test_search_falls_back_to_keyword_when_inference_fails(client, elastic):
     elastic.client.search.side_effect = [failure(), EMPTY | {"hits": {"hits": SEARCH_HITS[:1]}}]
-    response = client.get("/search", params=SEARCH)
+    response = client.get("/search", params=SEARCH, headers=register(client))
     assert response.status_code == 200
     assert response.json()["mode"] == "keyword"
     assert len(response.json()["results"]) == 1
@@ -481,21 +511,21 @@ def test_search_falls_back_to_keyword_when_inference_fails(client, elastic):
 
 
 def test_search_empty_results(client, elastic):
-    response = client.get("/search", params=SEARCH)
+    response = client.get("/search", params=SEARCH, headers=register(client))
     assert response.status_code == 200
     assert response.json()["results"] == []
 
 
 def test_search_both_attempts_failing_does_not_leak(client, elastic):
     elastic.client.search.side_effect = failure()
-    response = client.get("/search", params=SEARCH)
+    response = client.get("/search", params=SEARCH, headers=register(client))
     assert response.status_code == 503
     assert LEAK not in response.text
 
 
 def test_search_outage_does_not_retry(client, elastic):
     elastic.client.search.side_effect = ConnectionError(LEAK)
-    assert client.get("/search", params=SEARCH).status_code == 503
+    assert client.get("/search", params=SEARCH, headers=register(client)).status_code == 503
     assert elastic.client.search.call_count == 1
 
 
@@ -511,8 +541,8 @@ def test_search_outage_does_not_retry(client, elastic):
     ],
 )
 def test_search_rejects_invalid_input(client, elastic, params):
-    assert client.get("/search", params=params).status_code == 422
-    assert elastic.calls == 0
+    assert client.get("/search", params=params, headers=register(client)).status_code == 422
+    elastic.client.search.assert_not_called()
 
 
 def test_post_search_service_contract_is_unchanged(client, elastic):
@@ -530,8 +560,11 @@ def test_search_terms_do_not_reach_traces(elastic):
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     app = create_app(Settings())
     FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
+    params = {"conference": CONFERENCE, "q": "privateterm"}
     with TestClient(app) as client:
-        assert client.get("/search", params={"conference": CONFERENCE, "q": "privateterm"}).status_code == 200
+        assert client.get("/search", params=params, headers=register(client)).status_code == 200
+        assert client.get("/search", params=params).status_code == 401
+        assert client.get("/search", params=params | {"limit": 51}, headers=bearer("bad")).status_code == 401
     spans = exporter.get_finished_spans()
     assert spans
     assert "privateterm" not in str([dict(span.attributes) for span in spans])

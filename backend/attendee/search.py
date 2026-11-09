@@ -5,8 +5,9 @@ from fastapi import APIRouter, Depends, Query, Request
 from opentelemetry import trace
 from pydantic import StringConstraints
 
-from backend.attendee.elastic import PUBLIC_CONTENT, checked_search, elastic_errors, get_client, visible_in
-from backend.attendee.models import PublicSearchResponse
+from backend.attendee.auth import Attendee, current_attendee, require_conference
+from backend.attendee.elastic import SHARED_CONTENT, checked_search, elastic_errors, get_client, visible_in
+from backend.attendee.models import ContentSearchResponse
 from backend.models import Identifier
 
 router = APIRouter()
@@ -16,7 +17,7 @@ RESULT_FIELDS = ["title", "abstract", "speakers", "room", "start", "end", "gist"
 
 
 def hide_query_from_trace(request: Request):
-    # Typed search terms are in the URL, which the server span would otherwise keep.
+    # Typed search terms are in the URL, which the server span would keep even on rejected requests.
     span = trace.get_current_span()
     attributes = getattr(span, "attributes", None) or {}
     clean = {
@@ -60,16 +61,21 @@ def to_result(hit: dict) -> dict:
     }
 
 
-@router.get("/search", response_model=PublicSearchResponse, response_model_exclude_none=True)
+@router.get(
+    "/search",
+    dependencies=[Depends(hide_query_from_trace)],
+    response_model=ContentSearchResponse,
+    response_model_exclude_none=True,
+)
 def search_content(
+    attendee: Annotated[Attendee, Depends(current_attendee)],
     q: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200), Query()],
     conference: Identifier,
     es: Annotated[Elasticsearch, Depends(get_client)],
-    request: Request,
     limit: Annotated[int, Query(ge=1, le=50)] = 10,
 ):
-    hide_query_from_trace(request)
-    search = {"index": PUBLIC_CONTENT, "size": limit, "source": RESULT_FIELDS, "track_total_hits": False}
+    require_conference(attendee, conference)
+    search = {"index": SHARED_CONTENT, "size": limit, "source": RESULT_FIELDS, "track_total_hits": False}
     mode = "hybrid"
     with elastic_errors():
         try:

@@ -11,7 +11,7 @@ from backend.vector_store import StoreError
 PEOPLE = "people"
 MOMENTS = "moments"
 ALERTS = "alerts"
-PUBLIC_CONTENT = "talks,moments"
+SHARED_CONTENT = "talks,moments"
 RETENTION = timedelta(days=7)
 
 

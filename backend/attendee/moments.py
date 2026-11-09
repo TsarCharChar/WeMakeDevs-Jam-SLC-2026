@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Request
 
-from backend.attendee.auth import Attendee, current_attendee
+from backend.attendee.auth import Attendee, current_attendee, require_conference
 from backend.attendee.elastic import MOMENTS, RETENTION, elastic_errors, get_client
 from backend.attendee.models import MomentCreated, MomentWrite
 from backend.vector_store import StoreError, utcnow
@@ -18,8 +18,7 @@ def create_moment(
     body: MomentWrite,
     request: Request,
 ):
-    if body.conference != attendee.conference:
-        raise StoreError(403, "This token belongs to a different conference")
+    require_conference(attendee, body.conference)
     now = utcnow()
     expiry = body.expires_at.astimezone(UTC) if body.expires_at else now + RETENTION
     if not now < expiry <= now + RETENTION:

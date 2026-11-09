@@ -67,3 +67,8 @@ def current_attendee(request: Request, authorization: Annotated[str | None, Head
     if not token_matches(token, source) or is_expired(source):
         raise StoreError(401, INVALID_TOKEN)
     return Attendee(conference=source["conference"], handle=source["handle"])
+
+
+def require_conference(attendee: Attendee, conference: str):
+    if conference != attendee.conference:
+        raise StoreError(403, "This token belongs to a different conference")

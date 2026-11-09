@@ -6,8 +6,8 @@ Base URL: `https://grindset.cnh.radarhq.io`. All examples are synthetic.
 | --- | --- | --- |
 | `PUT /me` | None to claim a handle, attendee token to update | Create or update a profile |
 | `POST /moments` | Attendee token | Publish one approved gist |
-| `GET /graph` | None | Topic nodes and edges |
-| `GET /search` | None | Search talks and moments |
+| `GET /graph` | Attendee token | Topic nodes and edges |
+| `GET /search` | Attendee token | Search talks and moments |
 | `GET /feed` | Attendee token | The attendee's own alerts |
 
 `POST /search` is a different API: it is the server-to-server conversation search and needs `CONVERSATION_API_TOKEN`. Never put that token in Flutter.
@@ -112,7 +112,7 @@ A new moment can take a few seconds to appear in `/graph` and `/search`.
 
 ## GET /graph
 
-Query: `conference` (required), `limit` (topics, 1-100, default 50).
+Requires the token. Query: `conference` (required, must match the token's conference), `limit` (topics, 1-100, default 50).
 
 `GET /graph?conference=cnh`
 
@@ -133,7 +133,7 @@ Query: `conference` (required), `limit` (topics, 1-100, default 50).
 
 ## GET /search
 
-Query: `q` (required, 1-200 characters), `conference` (required), `limit` (1-50, default 10).
+Requires the token. Query: `q` (required, 1-200 characters), `conference` (required, must match the token's conference), `limit` (1-50, default 10).
 
 `GET /search?q=eBPF&conference=cnh`
 

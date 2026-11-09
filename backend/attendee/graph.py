@@ -3,7 +3,8 @@ from typing import Annotated
 from elasticsearch import Elasticsearch
 from fastapi import APIRouter, Depends, Query
 
-from backend.attendee.elastic import PUBLIC_CONTENT, get_client, run_search, visible_in
+from backend.attendee.auth import Attendee, current_attendee, require_conference
+from backend.attendee.elastic import SHARED_CONTENT, get_client, run_search, visible_in
 from backend.attendee.models import GraphResponse
 from backend.models import Identifier
 
@@ -13,14 +14,16 @@ RELATED_TOPICS = 10
 
 @router.get("/graph", response_model=GraphResponse)
 def get_graph(
+    attendee: Annotated[Attendee, Depends(current_attendee)],
     conference: Identifier,
     es: Annotated[Elasticsearch, Depends(get_client)],
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ):
+    require_conference(attendee, conference)
     # size=0 returns only topic counts, so no attendee field can reach the response.
     data = run_search(
         es,
-        index=PUBLIC_CONTENT,
+        index=SHARED_CONTENT,
         size=0,
         query={"bool": {"filter": visible_in(conference)}},
         aggregations={
