@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from backend.attendee import router as attendee_router
 from backend.config import Settings
+from backend.dynamic_sessions.api import router as dynamic_sessions_router
 from backend.maintenance import expire_periodically, purge_locations_periodically
 from backend.models import (
     ConversationSearch,
@@ -121,6 +122,7 @@ def create_app(settings: Settings | None = None, store: VectorStore | None = Non
 
     app.include_router(session_search_router)
     app.include_router(attendee_router)
+    app.include_router(dynamic_sessions_router)
 
     return app
 

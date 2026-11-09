@@ -1,0 +1,58 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dynamic-sessions
+  labels:
+    app: dynamic-sessions
+spec:
+  schedule: "*/5 * * * *"
+  # Overlap is also made safe in Elasticsearch, since this setting cannot guarantee exactly-once runs.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 240
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: dynamic-sessions
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: dynamic-sessions
+              image: app
+              command: ["opentelemetry-instrument", "python", "-m", "backend.dynamic_sessions.job", "run"]
+              env:
+                - name: TEAM_NAME
+                  value: "grindset"
+                - name: OTEL_SERVICE_NAME
+                  value: "confellow-dynamic-sessions"
+                - name: DASH0_OTEL_COLLECTOR_BASE_URL
+                  value: "https://ingress.us-west-2.aws.dash0.com"
+                - name: OTEL_LOGS_EXPORTER
+                  value: "none"
+              envFrom:
+                - secretRef:
+                    name: confellow-elastic
+                - secretRef:
+                    name: confellow-dash0
+                - configMapRef:
+                    name: dynamic-sessions-config
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 250m
+                  memory: 256Mi
+              securityContext:
+                runAsNonRoot: true
+                allowPrivilegeEscalation: false
+                seccompProfile:
+                  type: RuntimeDefault
+                capabilities:
+                  drop: ["ALL"]

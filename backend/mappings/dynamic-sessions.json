@@ -1,0 +1,36 @@
+{
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "record_type": { "type": "keyword" },
+      "id": { "type": "keyword" },
+      "conference": { "type": "keyword" },
+      "title": { "type": "text" },
+      "description": { "type": "text" },
+      "topic": { "type": "keyword" },
+      "topic_key": { "type": "keyword" },
+      "topics": { "type": "keyword" },
+      "attendee_count": { "type": "integer" },
+      "attendee_percentage": { "type": "float" },
+      "start": { "type": "date" },
+      "end": { "type": "date" },
+      "timezone": { "type": "keyword" },
+      "duration_minutes": { "type": "integer" },
+      "room": { "type": "keyword" },
+      "room_id": { "type": "keyword" },
+      "capacity": { "type": "integer" },
+      "accessibility": { "type": "keyword" },
+      "status": { "type": "keyword" },
+      "pending_reason": { "type": "keyword" },
+      "alerts_sent": { "type": "boolean" },
+      "demo": { "type": "boolean" },
+      "designated": { "type": "boolean" },
+      "auto_schedule_authorized": { "type": "boolean" },
+      "available_windows": { "type": "object", "enabled": false },
+      "session_id": { "type": "keyword" },
+      "created_at": { "type": "date" },
+      "updated_at": { "type": "date" },
+      "expires_at": { "type": "date" }
+    }
+  }
+}
