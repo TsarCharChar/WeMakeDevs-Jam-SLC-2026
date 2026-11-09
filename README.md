@@ -50,7 +50,7 @@ For an opt-in end-to-end check on an Android device: `flutter run -d <device-id>
 
 Override the backend origin for another HTTPS environment with `flutter run --dart-define=API_BASE_URL=https://your-api.example`. Use an HTTPS origin without a path, query, or credentials. Never put an Elasticsearch API key in a Flutter build. Search uses the backend response `{"conversations":[{"id":"...","conference":"...","transcript":"..."}]}`; the backend owns embedding and access control. Native Android includes the Internet permission; iOS uses HTTPS without transport-security exceptions.
 
-The model is bundled as a Flutter asset and copied into app-private storage on first recording. This adds roughly 574 MB to the app assets and another 574 MB to app storage; first-use copying and inference require additional RAM. Real-time performance with this large model must be measured on target phones.
+The model is bundled as a Flutter asset and copied into app-private storage on first recording. This adds roughly 57 MB to the app assets and another 57 MB to app storage; first-use copying and inference require additional RAM. Real-time performance with this large model must be measured on target phones.
 
 Validation commands: `flutter analyze` and `flutter test`. API and widget tests cover query encoding, validation, response parsing, network failures, loading, duplicate-submit prevention, results, empty results, retries, leaving during a request, microphone permission recovery, and narrow layouts with enlarged text. They do not validate native speech recognition.
 
@@ -58,7 +58,7 @@ The first Android debug build stopped because the license for Whisper's NDK `29.
 
 ## Download the offline speech model
 
-We use **Whisper large-v3-turbo, Q5_0 quantization**, in whisper.cpp's GGML format. Model weights are downloaded separately and excluded from Git: cloning this repository does **not** download them. Git LFS is not required.
+We use **Whisper base.en, Q5_1 quantization**, in whisper.cpp's GGML format. Model weights are downloaded separately and excluded from Git: cloning this repository does **not** download them. Git LFS is not required.
 
 From the repository root, run:
 
@@ -68,17 +68,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\download-model.ps1
 
 On macOS or Linux with PowerShell installed, run `pwsh -NoProfile -File ./scripts/download-model.ps1`.
 
-The script downloads approximately **574 MB** to `assets/models/ggml-large-v3-turbo-q5_0.bin`, verifies its SHA-256 checksum, and skips downloading an existing verified copy. Allow enough free space for the model and a temporary download. If a download fails, rerun the command.
+The script downloads approximately **57 MB** to `assets/models/ggml-base.en-q5_1.bin`, verifies its SHA-256 checksum, and skips downloading an existing verified copy. Allow enough free space for the model and a temporary download. If a download fails, rerun the command.
 
 The model is included by `pubspec.yaml` and loaded through `whisper_ggml` 2.9.0. Download it before building or running tests. It remains excluded from Git; contributors and CI fetch it separately.
 
 ### Model provenance
 
-- Original model: [openai/whisper-large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo)
+- Original model: [openai/whisper-base.en](https://huggingface.co/openai/whisper-base.en)
 - Converted weights: [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp)
 - Pinned revision: `5359861c739e955e79d9a303bcbc70fb988958b1`
-- File: `ggml-large-v3-turbo-q5_0.bin`
-- Size: `574041195` bytes
-- SHA-256: `394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2`
+- File: `ggml-base.en-q5_1.bin`
+- Size: `59721011` bytes
+- SHA-256: `4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f`
 
 The model is MIT licensed; retain the applicable license and notices when redistributing it. See the [upstream model license](https://huggingface.co/openai/whisper-large-v3-turbo) and [whisper.cpp license](https://github.com/ggml-org/whisper.cpp/blob/master/LICENSE).

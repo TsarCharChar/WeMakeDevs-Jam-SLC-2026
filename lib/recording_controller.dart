@@ -65,11 +65,11 @@ class RecordingController extends ChangeNotifier {
   }
 
   Future<String> _model() async {
-    const name = 'ggml-large-v3-turbo-q5_0.bin';
+    const name = 'ggml-base.en-q5_1.bin';
     final dir = await getApplicationSupportDirectory();
     await dir.create(recursive: true);
     final file = File('${dir.path}/$name');
-    if (await file.exists() && await file.length() == 574041195) {
+    if (await file.exists() && await file.length() == 59721011) {
       return file.path;
     }
     status = 'Preparing offline model. First launch takes a moment.';
@@ -82,7 +82,7 @@ class RecordingController extends ChangeNotifier {
     );
     final digest = await sha256.bind(partial.openRead()).first;
     if (digest.toString() !=
-        '394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2') {
+        '4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f') {
       await partial.delete();
       throw StateError('Speech model damaged. Reinstall the app.');
     }
