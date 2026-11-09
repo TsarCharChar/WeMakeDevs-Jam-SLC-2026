@@ -1,11 +1,76 @@
 # Geospatial conversation presence
 
-This branch adds the first backend slice: validated opt-in check-in data,
-server-controlled expiry, an additive Elasticsearch mapping, and geographic
-filters on `GET /querysession` and authenticated `POST /matches`. It does not
-collect phone location, persist check-ins, or expose a presence write endpoint.
-`/querysession` retains its single synthetic-document allowlist. `/matches`
-retains attendee authentication and the existing sharing and conference checks.
+This branch adds validated opt-in location data, server-controlled expiry,
+continuous attendee location updates, and geographic filters on
+`GET /querysession` and authenticated `POST /matches`. `/querysession` retains its
+single synthetic-document allowlist. `/matches` retains attendee authentication and
+the existing sharing and conference checks.
+
+## Continuous attendee location
+
+Location is stored per attendee in the `attendee-locations` index, one document
+each. Every update replaces that document, so the backend keeps no movement
+history. A location expires five minutes after its last update, and a background
+pass deletes expired documents about once a minute.
+
+Create the index once, before deploying, from `backend/mappings/attendee-locations.json`.
+In Kibana Dev Tools run `PUT /attendee-locations` with that file's contents as the
+body. The runtime API key needs `read`, `write` and `view_index_metadata` on it.
+Until it exists, `PUT /me/location` returns 503, and `/matches` works without places.
+
+### PUT /me/location
+
+Requires the attendee token. The app sends this about once a minute while location
+sharing is on. Only send `location_consent: true` if the attendee agreed.
+
+```json
+{
+  "location_consent": true,
+  "location": {"lat": 40.76081, "lon": -111.89106},
+  "accuracy_m": 12,
+  "venue_id": "conference-center",
+  "room_id": "room-a",
+  "floor": "1",
+  "show_handle": false
+}
+```
+
+`location_consent`, `location` and `accuracy_m` are required. `venue_id`, `room_id`,
+`zone_id` and `floor` are optional. `show_handle` defaults to false.
+
+Response 200: `{"updated_at": "...", "expires_at": "...", "show_handle": false}`.
+
+### DELETE /me/location
+
+Requires the attendee token. Call this when the attendee turns sharing off. It
+removes the location immediately and returns 204, even if there was none.
+
+### How /matches uses location
+
+A match includes `place` only while its author has an active location, and only for
+recordings they have already shared. Coordinates are rounded to four decimal places
+(about 11 meters). `handle` appears only if the author sent `show_handle: true`.
+
+```json
+{
+  "id": "6f1c...-0000000000",
+  "excerpt": "We compared Kubernetes autoscaling strategies.",
+  "topics": [],
+  "updated_at": "2026-11-09T20:00:00Z",
+  "score": 0.89,
+  "similarity": 0.78,
+  "place": {"lat": 40.7608, "lon": -111.8911, "accuracy_m": 12, "room_id": "room-a", "updated_at": "2026-11-09T20:05:00Z"},
+  "handle": "bob"
+}
+```
+
+Geographic filters on `/matches` apply to authors' current locations, and `radius_m`
+must be at least 50. Anyone holding an attendee token for the conference can see the
+`place` of attendees with a shared recording, and handles are self-service, so a
+token does not prove attendance.
+
+The sections below describe the separate per-conversation `presence` field, which
+`/querysession` still reads and nothing writes yet.
 
 Compatibility was reviewed against `origin/main` at `184b12f`, including the
 realtime transcript and shared-conversation matching changes. The public route
@@ -134,8 +199,8 @@ For authenticated matching, send an attendee bearer token and a body such as:
 
 `/matches` also requires a conference-visible, consenting, finalized transcript
 and excludes the requester's own recordings. Geographic filters never relax those
-conditions. Existing matches without presence still appear in ordinary matching;
-they are excluded only when a geographic filter is requested. Saved-profile
+conditions. Matches whose author has no active location still appear in ordinary
+matching; they are excluded only when a geographic filter is requested. Saved-profile
 interests continue to work when `interests` is omitted.
 
 All geographic conditions combine with AND. Searches require shared, unexpired
@@ -146,8 +211,8 @@ geographic distance and does not establish a room or floor match.
 
 Synthetic geographic `/querysession` results include `presence` alongside `id`,
 `conference`, and `transcript`. Non-geographic responses omit presence.
-`/matches` keeps its existing excerpt/score response and does not expose the
-author or precise coordinates. Invalid query combinations return a redacted 422
+`/matches` exposes `place` and `handle` only as described in Continuous attendee
+location. Invalid query combinations return a redacted 422
 before executing a search. Attendee authentication may still read the token record.
 
 The current Flutter client uses attendee content search for talks/moments and the
@@ -172,9 +237,8 @@ They mock Elasticsearch; a live test still needs a separately scoped synthetic
 fixture with fresh presence after the additive mapping is applied. The existing
 setup smoke fixture is expired and therefore should not match a geographic query.
 
-Next: authenticated check-in/checkout persistence, venue/room lookup,
-Flutter opt-in check-in and search controls, expiry cleanup, and live Elastic
-verification. QR scanning, automatic GPS collection, polygons, and heatmaps are
+Next: creating the `attendee-locations` index, Flutter consent and background
+location updates, venue/room lookup, and live Elastic verification. QR scanning, automatic GPS collection, polygons, and heatmaps are
 outside this initial slice.
 
 References:

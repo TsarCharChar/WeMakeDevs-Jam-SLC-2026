@@ -14,9 +14,12 @@ Base URL: `https://grindset.cnh.radarhq.io`. All examples are synthetic.
 | `GET /transcripts/{stream_id}` | Attendee token | Read ordered, paginated transcript history |
 | `PUT /transcripts/{stream_id}/segments/{sequence}/sharing` | Attendee token | Share or unshare one finalized segment |
 | `POST /matches` | Attendee token | Find other attendees' shared transcripts that match interests |
+| `PUT /me/location` | Attendee token | Update the attendee's current location, with consent |
+| `DELETE /me/location` | Attendee token | Stop sharing and remove the current location |
 
 See the [realtime transcript contract](transcript-api.md) for revisions, retries,
-append behavior, sharing, matching, privacy and the Flutter integration steps.
+append behavior, sharing, matching, privacy and the Flutter integration steps, and
+[geospatial presence](geospatial.md) for location updates and `place` in matches.
 
 `POST /search` is a different API: it is the server-to-server conversation search and needs `CONVERSATION_API_TOKEN`. Never put that token in Flutter.
 

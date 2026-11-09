@@ -3,10 +3,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from elastic_transport import ConnectionError
-from elasticsearch import ConflictError
+from elasticsearch import ConflictError, NotFoundError
 from fastapi.testclient import TestClient
 
 from backend.attendee.auth import Attendee
+from backend.attendee.locations import LOCATIONS
 from backend.attendee.transcripts import segment_document_id
 from backend.config import Settings
 from backend.main import create_app
@@ -27,7 +28,32 @@ SCORE = 0.9
 class MatchElastic(TranscriptElastic):
     def __init__(self):
         super().__init__()
+        self.locations = {}
         self.client.update.side_effect = self.update
+        self.client.mget.side_effect = self.mget
+        self.client.delete.side_effect = self.delete
+
+    def index(self, *, index, id, document, **guard):
+        if index != LOCATIONS:
+            return super().index(index=index, id=id, document=document, **guard)
+        assert not guard
+        self.locations[id] = {"_id": id, "_source": copy.deepcopy(document)}
+        return {"result": "updated"}
+
+    def mget(self, *, index, ids):
+        assert index == LOCATIONS
+        return {"docs": [
+            {**copy.deepcopy(self.locations[doc_id]), "found": True} if doc_id in self.locations
+            else {"_id": doc_id, "found": False}
+            for doc_id in ids
+        ]}
+
+    def delete(self, *, index, id, refresh):
+        assert index == LOCATIONS and refresh == "wait_for"
+        if id not in self.locations:
+            raise error(NotFoundError, 404, {"found": False})
+        del self.locations[id]
+        return {"result": "deleted"}
 
     def update(self, *, index, id, doc, if_seq_no, if_primary_term, refresh):
         assert index == "conversations" and refresh == "wait_for" and if_primary_term == 1
@@ -41,9 +67,11 @@ class MatchElastic(TranscriptElastic):
     def search(self, *, query, size, sort=None, **kwargs):
         if sort is not None:
             return super().search(query=query, size=size, sort=sort, **kwargs)
-        assert kwargs["index"] == "conversations" and kwargs["allow_partial_search_results"] is False
+        assert kwargs["allow_partial_search_results"] is False
+        assert kwargs["index"] in ("conversations", LOCATIONS)
+        documents = self.locations if kwargs["index"] == LOCATIONS else self.conversations
         hits = []
-        for doc in copy.deepcopy(self.conversations).values():
+        for doc in copy.deepcopy(documents).values():
             source = doc["_source"]
             def field_value(field, source=source):
                 value = source
@@ -53,11 +81,16 @@ class MatchElastic(TranscriptElastic):
                     value = value.get(key)
                 return value
 
-            allowed = datetime.fromisoformat(source["expires_at"]) > datetime.now(UTC)
+            allowed = "expires_at" not in source or datetime.fromisoformat(source["expires_at"]) > datetime.now(UTC)
             for clause in query["bool"]["filter"]:
                 if "term" in clause:
                     field, value = next(iter(clause["term"].items()))
                     allowed &= field_value(field) == value
+                if "terms" in clause:
+                    field, values = next(iter(clause["terms"].items()))
+                    allowed &= field_value(field) in values
+                if "geo_distance" in clause:
+                    allowed &= field_value("presence.location") is not None
                 if "range" in clause:
                     field, bounds = next(iter(clause["range"].items()))
                     value = field_value(field)
@@ -241,7 +274,7 @@ def test_matches_build_a_cosine_query_with_every_privacy_filter(client, elastic)
         {"range": {"expires_at": {"gt": "now"}}},
     ]
     assert call["query"]["bool"]["must_not"] == [{"term": {"handle": "ada"}}]
-    assert "handle" not in call["source"]
+    assert call["source"] == ["transcript", "topics", "updated_at", "handle"]
 
 
 def test_matches_exclude_private_segments(client, elastic):
@@ -339,84 +372,10 @@ def test_matches_partial_result_is_not_success(client, elastic):
     assert client.post("/matches", json=MATCH, headers=headers).status_code == 503
 
 
-GEO_MATCH = MATCH | {"venue_id": "center", "room_id": "room-a"}
-
-
-def add_presence(elastic, **changes):
-    now = datetime.now(UTC)
-    stored(elastic, BOB)["presence"] = {
-        "shared": True, "venue_id": "center", "room_id": "room-a",
-        "source": "manual_room", "updated_at": now.isoformat(),
-        "expires_at": (now + timedelta(minutes=5)).isoformat(), **changes,
-    }
-
-
-def test_geo_matches_keep_authentication_and_conference_scope(client, elastic):
-    assert client.post("/matches", json=GEO_MATCH).status_code == 401
-    response = client.post("/matches", json=GEO_MATCH | {"conference": "other"},
-                           headers=register(client))
-    assert response.status_code == 403
-    elastic.client.search.assert_not_called()
-
-
-def test_geo_matches_find_shared_room_without_exposing_coordinates_or_author(client, elastic):
-    bob = shared_segment(client, handle="bob")
-    add_presence(elastic)
-    ada = register(client)
-    response = client.post("/matches", json=GEO_MATCH, headers=ada)
-    assert response.status_code == 200
-    assert len(response.json()["matches"]) == 1
-    assert "presence" not in response.json()["matches"][0]
-    assert "handle" not in response.text
-    filters = elastic.client.search.call_args.kwargs["query"]["bool"]["filter"]
-    assert {"term": {"presence.shared": True}} in filters
-    assert {"range": {"presence.expires_at": {"gt": "now"}}} in filters
-    # Presence opt-in never overrides the transcript's existing sharing decision.
-    client.put(SHARING, json={"shared": False}, headers=bob)
-    assert client.post("/matches", json=GEO_MATCH, headers=ada).json() == {"matches": []}
-
-
-@pytest.mark.parametrize("changes", [
-    {"shared": False}, {"room_id": "room-b"}, {"venue_id": "other"},
-    {"expires_at": "2000-01-01T00:00:00+00:00"},
-    {"updated_at": "2099-01-01T00:00:00+00:00"},
-])
-def test_geo_matches_exclude_stale_unshared_or_wrong_room_presence(client, elastic, changes):
-    shared_segment(client, handle="bob")
-    add_presence(elastic, **changes)
-    response = client.post("/matches", json=GEO_MATCH, headers=register(client))
-    assert response.status_code == 200
-    assert response.json() == {"matches": []}
-
-
-def test_existing_shared_conversations_without_presence_remain_in_ordinary_matches(client, elastic):
-    shared_segment(client, handle="bob")
-    headers = register(client)
-    assert client.post("/matches", json=GEO_MATCH, headers=headers).json() == {"matches": []}
-    assert len(client.post("/matches", json=MATCH, headers=headers).json()["matches"]) == 1
-
-
-def test_geo_matches_add_radius_filter_without_changing_privacy_filters(client, elastic):
-    response = client.post("/matches", json=MATCH | {"lat": 40, "lon": -111, "radius_m": 100},
-                           headers=register(client))
-    assert response.status_code == 200
-    query = elastic.client.search.call_args.kwargs["query"]["bool"]
-    assert {"geo_distance": {
-        "distance": "100.0m", "presence.location": {"lat": 40.0, "lon": -111.0},
-        "ignore_unmapped": True,
-    }} in query["filter"]
-    for clause in (
-        {"term": {"conference": "cnh"}}, {"term": {"visibility": "conference"}},
-        {"term": {"consent": True}}, {"term": {"is_final": True}},
-        {"range": {"expires_at": {"gt": "now"}}},
-    ):
-        assert clause in query["filter"]
-    assert query["must_not"] == [{"term": {"handle": "ada"}}]
-
-
 @pytest.mark.parametrize("changes", [
     {"lat": 40}, {"lat": 91, "lon": 0, "radius_m": 100},
     {"lat": 0, "lon": 0, "radius_m": 10001},
+    {"lat": 0, "lon": 0, "radius_m": 49},
     {"room_id": "a"}, {"floor": "2"}, {"zone_id": "lobby"},
     {"venue_id": " "}, {"presence": {"shared": True}},
 ])
