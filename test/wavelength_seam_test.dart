@@ -185,6 +185,11 @@ void main() {
       for (final topic in catalog.topicVocabulary) {
         expect(ScheduleCatalog.isMetaTag(topic), isFalse);
       }
+      // 017: Unlisted topics never fall back to Kubernetes or popular tags.
+      expect(
+        catalog.extractMatchedTopics('python and rust and machine learning'),
+        isEmpty,
+      );
     });
 
     test('extractMatchedTopics matches deterministically without inventing topics or substring false positives', () {
