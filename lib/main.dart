@@ -887,6 +887,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         return Scaffold(
           backgroundColor: WavelengthColors.canvas,
           body: SafeArea(
+            minimum: const EdgeInsets.only(bottom: 18),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: <Widget>[
@@ -1006,7 +1007,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     final micCaption = isRecording
         ? 'Tap to stop'
-        : (_recording.busy ? 'Preparing…' : 'Tap to record a note');
+        : (_recording.phase == RecordingPhase.stopping
+              ? 'Turning your words into text…'
+              : (_recording.busy ? 'Preparing…' : 'Tap to record a note'));
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1314,8 +1317,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ),
 
             // Honest Two-Line Footer + Swipe Hint
-            Padding(
-              padding: const EdgeInsets.fromLTRB(24, 10, 24, 10),
+            SafeArea(
+              top: false,
+              minimum: const EdgeInsets.fromLTRB(24, 10, 24, 16),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: <Widget>[
