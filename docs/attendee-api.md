@@ -9,6 +9,8 @@ Base URL: `https://grindset.cnh.radarhq.io`. All examples are synthetic.
 | `GET /graph` | Attendee token | Topic nodes and edges |
 | `GET /search` | Attendee token | Search talks and moments |
 | `GET /feed` | Attendee token | The attendee's own alerts |
+| `POST /rooms/{room}/messages` | Attendee token | Say one line in a topic or talk room |
+| `GET /rooms/{room}/messages` | Attendee token | Read a room's recent messages and how many people are in it |
 | `PUT /transcripts/{stream_id}/segments/{sequence}` | Attendee token | Save a partial or final private transcript segment |
 | `GET /transcripts/{stream_id}/segments/{sequence}` | Attendee token | Read the latest saved segment revision |
 | `GET /transcripts/{stream_id}` | Attendee token | Read ordered, paginated transcript history |
@@ -177,6 +179,52 @@ Requires the token. Query: `q` (required, 1-200 characters), `conference` (requi
 ```
 
 Results are best match first. Use `type` to choose the layout, and treat absent fields as not available. Scores are only for ordering. `mode` is `keyword` when semantic search was unavailable; in that mode moments match only on an exact topic. Moments never include the author's handle.
+
+## Rooms
+
+Every topic and talk has one room, so people who share a space can talk: `topic:<name>` or `talk:<id>`. Topic rooms
+ignore case, so `topic:eBPF` and `topic:ebpf` are the same room. Percent-encode the room in the path.
+
+### POST /rooms/{room}/messages
+
+Requires the token. The handle comes from the token, so do not send one; unknown fields return 422.
+
+| Field | Rules |
+| --- | --- |
+| `conference` | Required, must match the token's conference |
+| `text` | Required, one line, 1-280 characters |
+
+`POST /rooms/topic:eBPF/messages`
+
+```json
+{"conference": "cnh", "text": "Anyone going to the Cilium talk at 11:50?"}
+```
+
+Response `201`: `{"id": "...", "room": "topic:ebpf", "at": "2026-11-09T20:00:00+00:00"}`. The message is readable
+as soon as the response arrives. Messages expire after seven days.
+
+### GET /rooms/{room}/messages
+
+Requires the token. Query: `conference` (required), `limit` (1-100, default 50), `after` (optional ISO 8601 time with
+a timezone: only messages after it).
+
+```json
+{
+  "room": "topic:ebpf",
+  "people": 2,
+  "messages": [
+    {"id": "...", "text": "Anyone going to the Cilium talk at 11:50?", "at": "2026-11-09T20:00:00+00:00", "author": "guest-11ca1f", "mine": true},
+    {"id": "...", "text": "Yes, see you there.", "at": "2026-11-09T20:01:00+00:00", "author": "guest-43fc79", "mine": false}
+  ]
+}
+```
+
+Messages are the newest page, oldest first. To poll, pass the `at` of the last message as `after`. `people` is how
+many different attendees have written in the room, counted over the whole room. `author` is a label that is stable
+inside one room and different in every other room, so a chat cannot be used to follow someone between rooms. The
+handle is never returned. A room nobody has written in returns an empty list.
+
+There is no moderation or rate limit yet.
 
 ## GET /feed
 
