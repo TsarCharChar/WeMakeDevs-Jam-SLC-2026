@@ -210,7 +210,7 @@ def test_radius_search_finds_nearby_recorders(client, elastic):
     assert {"geo_distance": {
         "distance": "100.0m", "presence.location": {"lat": 40.76, "lon": -111.89}, "ignore_unmapped": True,
     }} in nearby["query"]["bool"]["filter"]
-    filters = conversations["query"]["bool"]["filter"]
+    filters = conversations["query"]["knn"]["filter"]["bool"]["filter"]
     assert {"terms": {"handle": ["bob"]}} in filters
     for clause in (
         {"term": {"conference": "cnh"}}, {"term": {"visibility": "conference"}},

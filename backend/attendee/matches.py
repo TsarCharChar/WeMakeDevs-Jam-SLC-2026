@@ -16,6 +16,7 @@ from backend.vector_store import StoreError
 
 router = APIRouter()
 EXCERPT_LENGTH = 500
+KNN_CANDIDATES = 100
 
 
 class MatchRequest(GeographicSearch):
@@ -96,18 +97,27 @@ def find_matches(
         source=["transcript", "topics", "updated_at", "handle"],
         track_total_hits=False,
         query={
-            "bool": {
-                # A match on semantic_text embeds the interests and compares them with the stored vectors.
-                "must": [{"match": {"transcript": {"query": interests}}}],
-                "filter": [
-                    {"term": {"conference": attendee.conference}},
-                    {"term": {"visibility": "conference"}},
-                    {"term": {"consent": True}},
-                    {"term": {"is_final": True}},
-                    {"range": {"expires_at": {"gt": "now"}}},
-                    *place_filters,
-                ],
-                "must_not": [{"term": {"handle": attendee.handle}}],
+            "knn": {
+                # knn on semantic_text embeds the interests with the field's inference endpoint.
+                "field": "transcript",
+                "k": body.limit,
+                "num_candidates": KNN_CANDIDATES,
+                "query_vector_builder": {"text_embedding": {"model_text": interests}},
+                # Only knn's own filter is a pre-filter. A bool filter around the vector search
+                # runs after the top k are picked, so private and own segments crowded out matches.
+                "filter": {
+                    "bool": {
+                        "filter": [
+                            {"term": {"conference": attendee.conference}},
+                            {"term": {"visibility": "conference"}},
+                            {"term": {"consent": True}},
+                            {"term": {"is_final": True}},
+                            {"range": {"expires_at": {"gt": "now"}}},
+                            *place_filters,
+                        ],
+                        "must_not": [{"term": {"handle": attendee.handle}}],
+                    }
+                },
             }
         },
     )

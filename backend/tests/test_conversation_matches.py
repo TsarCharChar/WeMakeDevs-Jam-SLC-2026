@@ -71,6 +71,8 @@ class MatchElastic(TranscriptElastic):
         assert kwargs["index"] in ("conversations", LOCATIONS)
         documents = self.locations if kwargs["index"] == LOCATIONS else self.conversations
         hits = []
+        # A knn query carries its privacy filters as a pre-filter.
+        query = query["knn"]["filter"] if "knn" in query else query
         for doc in copy.deepcopy(documents).values():
             source = doc["_source"]
             def field_value(field, source=source):
@@ -265,15 +267,20 @@ def test_matches_return_shared_text_without_author(client, elastic):
 def test_matches_build_a_cosine_query_with_every_privacy_filter(client, elastic):
     client.post("/matches", json=MATCH, headers=register(client))
     call = elastic.client.search.call_args.kwargs
-    assert call["query"]["bool"]["must"] == [{"match": {"transcript": {"query": MATCH["interests"]}}}]
-    assert call["query"]["bool"]["filter"] == [
+    knn = call["query"]["knn"]
+    assert knn["field"] == "transcript"
+    assert knn["k"] == 10
+    assert knn["query_vector_builder"] == {"text_embedding": {"model_text": MATCH["interests"]}}
+    # Privacy filters must be knn pre-filters, never post-filters on the top k.
+    assert set(call["query"]) == {"knn"}
+    assert knn["filter"]["bool"]["filter"] == [
         {"term": {"conference": "cnh"}},
         {"term": {"visibility": "conference"}},
         {"term": {"consent": True}},
         {"term": {"is_final": True}},
         {"range": {"expires_at": {"gt": "now"}}},
     ]
-    assert call["query"]["bool"]["must_not"] == [{"term": {"handle": "ada"}}]
+    assert knn["filter"]["bool"]["must_not"] == [{"term": {"handle": "ada"}}]
     assert call["source"] == ["transcript", "topics", "updated_at", "handle"]
 
 
@@ -320,8 +327,8 @@ def test_matches_cap_the_excerpt(client, elastic):
 
 def test_matches_use_saved_interests_when_none_are_sent(client, elastic):
     client.post("/matches", json={"conference": "cnh"}, headers=register(client, interests="eBPF tracing"))
-    must = elastic.client.search.call_args.kwargs["query"]["bool"]["must"]
-    assert must == [{"match": {"transcript": {"query": "eBPF tracing"}}}]
+    knn = elastic.client.search.call_args.kwargs["query"]["knn"]
+    assert knn["query_vector_builder"] == {"text_embedding": {"model_text": "eBPF tracing"}}
 
 
 def test_matches_need_some_interests(client, elastic):
