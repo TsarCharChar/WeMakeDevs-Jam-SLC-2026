@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -8,18 +9,65 @@ import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
 import 'package:whisper_ggml/whisper_ggml.dart';
 
+import 'attendee_api.dart';
+import 'transcript_sync.dart';
+
 enum RecordingPhase { idle, preparing, recording, stopping }
 
+/// Computes normalized perceptual mic energy (0.0..1.0) from 16-bit LE PCM.
+double computePcmLevel(Uint8List bytes) {
+  final sampleCount = bytes.length ~/ 2;
+  if (sampleCount == 0) return 0;
+  final data = ByteData.sublistView(bytes);
+  var sumSquares = 0.0;
+  // Stride by up to 4 samples on large chunks to keep UI callback ultra-light.
+  final step = sampleCount > 512 ? 4 : 1;
+  var counted = 0;
+  for (var i = 0; i < sampleCount; i += step) {
+    final sample = data.getInt16(i * 2, Endian.little) / 32768.0;
+    sumSquares += sample * sample;
+    counted++;
+  }
+  if (counted == 0) return 0;
+  final rms = math.sqrt(sumSquares / counted);
+  if (rms < 0.002) return 0;
+  // Map roughly -48 dBFS .. -6 dBFS onto 0.0 .. 1.0 with gentle curve.
+  final db = 20.0 * (math.log(rms) / math.ln10);
+  return ((db + 48.0) / 42.0).clamp(0.0, 1.0);
+}
+
 class RecordingController extends ChangeNotifier {
+  RecordingController({this.onNoteCompleted, this.sync});
+
+  static const Duration maxDuration = Duration(minutes: 3);
+  static const int waveformBarCount = 28;
+
+  final ValueChanged<String>? onNoteCompleted;
+  final TranscriptSync? sync;
+  Future<void> closed = Future.value();
   final _recorder = AudioRecorder();
   WhisperLiveSession? _session;
   StreamSubscription<Uint8List>? _audio;
   StreamSubscription<String>? _text;
   Timer? _limit;
+  Timer? _clock;
+  DateTime? _startedAt;
+  Future<void>? _finishing;
+  Completer<void>? _preparation;
   bool _disposed = false, _cancelled = false;
   RecordingPhase phase = RecordingPhase.idle;
-  String transcript = '', status = 'Your next good conversation starts here.';
+  String transcript = '', status = 'Ready to capture your next note.';
   String? error;
+  double micLevel = 0;
+  Duration elapsed = Duration.zero;
+  final List<double> _bars = List<double>.filled(
+    waveformBarCount,
+    0,
+    growable: true,
+  );
+
+  List<double> get waveformBars => List<double>.unmodifiable(_bars);
+
   bool get busy =>
       phase == RecordingPhase.preparing || phase == RecordingPhase.stopping;
   void update() {
@@ -55,6 +103,7 @@ class RecordingController extends ChangeNotifier {
   Future<void> start() async {
     if (phase != RecordingPhase.idle) return;
     phase = RecordingPhase.preparing;
+    _preparation = Completer<void>();
     _cancelled = false;
     transcript = '';
     error = null;
@@ -64,6 +113,7 @@ class RecordingController extends ChangeNotifier {
       if (!await _recorder.hasPermission()) {
         throw StateError('Enable microphone access in your device settings.');
       }
+      await sync?.begin();
       final path = await _model();
       if (_cancelled || _disposed) return;
       status = 'Loading Whisper on your device…';
@@ -73,7 +123,9 @@ class RecordingController extends ChangeNotifier {
       _text = _session!.partials.listen(
         (value) {
           transcript = value;
+          sync?.updateText(value);
           update();
+          if (value.runes.length >= 18000) unawaited(stop());
         },
         onError: (Object e) {
           error = 'Transcription interrupted: $e';
@@ -88,7 +140,17 @@ class RecordingController extends ChangeNotifier {
         ),
       );
       _audio = stream.listen(
-        (bytes) => _session?.feed(bytes),
+        (bytes) {
+          _session?.feed(bytes);
+          final rawLevel = computePcmLevel(bytes);
+          // Smooth attack/decay for fluid wave physics.
+          micLevel = rawLevel > micLevel
+              ? micLevel * 0.35 + rawLevel * 0.65
+              : micLevel * 0.72 + rawLevel * 0.28;
+          if (_bars.length >= waveformBarCount) _bars.removeAt(0);
+          _bars.add(micLevel);
+          update();
+        },
         onError: (Object e) {
           error = 'Microphone interrupted: $e';
           unawaited(stop());
@@ -96,15 +158,27 @@ class RecordingController extends ChangeNotifier {
       );
       if (_cancelled || _disposed) return;
       phase = RecordingPhase.recording;
+      _startedAt = DateTime.now();
+      elapsed = Duration.zero;
       status = 'Listening on this device · tap to stop';
-      _limit = Timer(const Duration(minutes: 3), () => unawaited(stop()));
+      _limit = Timer(maxDuration, () => unawaited(stop()));
+      _clock = Timer.periodic(const Duration(milliseconds: 250), (_) {
+        final started = _startedAt;
+        if (started == null || phase != RecordingPhase.recording) return;
+        elapsed = DateTime.now().difference(started);
+        if (elapsed > maxDuration) elapsed = maxDuration;
+        update();
+      });
     } catch (e) {
-      error = 'Could not start recording: $e';
+      error = e is AttendeeApiException
+          ? e.message
+          : 'Could not start recording: $e';
       _cancelled = true;
     } finally {
       if (_cancelled || _disposed) {
         try {
           await _cleanup();
+          await sync?.finish(transcript);
         } catch (e) {
           error ??= 'Could not finish: $e';
         }
@@ -113,11 +187,19 @@ class RecordingController extends ChangeNotifier {
         if (_disposed) await _recorder.dispose();
       }
       update();
+      _preparation?.complete();
     }
   }
 
   Future<void> _cleanup() async {
     _limit?.cancel();
+    _clock?.cancel();
+    _clock = null;
+    _startedAt = null;
+    micLevel = 0;
+    for (var i = 0; i < _bars.length; i++) {
+      _bars[i] = 0;
+    }
     try {
       await _recorder.stop();
     } catch (_) {}
@@ -126,42 +208,65 @@ class RecordingController extends ChangeNotifier {
     final session = _session;
     _session = null;
     try {
-      if (session != null) transcript = await session.stop();
+      if (session != null) {
+        final finalText = await session.stop();
+        if (finalText.trim().isNotEmpty) transcript = finalText;
+      }
     } finally {
       await _text?.cancel();
       _text = null;
     }
   }
 
-  Future<void> stop() async {
+  Future<void> stop() {
     if (phase == RecordingPhase.preparing) {
       _cancelled = true;
-      return;
+      return Future.value();
     }
-    if (phase != RecordingPhase.recording) return;
+    if (phase == RecordingPhase.stopping) return _finishing!;
+    if (phase != RecordingPhase.recording) return Future.value();
     phase = RecordingPhase.stopping;
-    status = 'Finishing your transcript…';
+    status = 'Finishing your note…';
+    _finishing = _finish();
     update();
+    return _finishing!;
+  }
+
+  Future<void> _finish() async {
+    var notifyCompleted = false;
     try {
       await _cleanup();
+      notifyCompleted = transcript.trim().isNotEmpty;
     } catch (e) {
       error = 'Could not finish transcription: $e';
+    } finally {
+      await sync?.finish(transcript);
     }
     phase = RecordingPhase.idle;
+    elapsed = Duration.zero;
     status = transcript.isEmpty
         ? 'No speech detected. Try again.'
-        : 'Conversation captured · kept for this session';
+        : sync?.enabled == true
+        ? 'Note captured · check private saving status'
+        : 'Note captured · kept on this phone';
     update();
+    if (notifyCompleted && !_disposed) {
+      onNoteCompleted?.call(transcript.trim());
+    }
   }
 
   @override
   void dispose() {
     _disposed = true;
     _cancelled = true;
-    if (phase != RecordingPhase.preparing) {
-      unawaited(
-        _cleanup().catchError((Object _) {}).whenComplete(_recorder.dispose),
-      );
+    if (phase == RecordingPhase.preparing) {
+      closed = _preparation!.future;
+    } else {
+      closed = (phase == RecordingPhase.stopping ? _finishing! : _cleanup())
+          .then((_) => sync?.finish(transcript))
+          .catchError((Object _) {})
+          .whenComplete(_recorder.dispose);
+      unawaited(closed);
     }
     super.dispose();
   }

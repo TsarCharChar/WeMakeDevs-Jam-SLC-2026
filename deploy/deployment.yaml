@@ -32,10 +32,24 @@ spec:
             - name: TEAM_NAME
               value: "grindset"
 
-          # Load Elasticsearch credentials from Kubernetes
+            - name: OTEL_SERVICE_NAME
+              value: "confellow-api"
+
+            - name: DASH0_OTEL_COLLECTOR_BASE_URL
+              value: "https://ingress.us-west-2.aws.dash0.com"
+
+            - name: OTEL_LOGS_EXPORTER
+              value: "none"
+
           envFrom:
             - secretRef:
                 name: confellow-elastic
+            - secretRef:
+                name: confellow-dash0
+            # Optional credentials/configuration for the authenticated vector API.
+            - secretRef:
+                name: app-vector-search
+                optional: true
 
           resources:
             requests:
@@ -50,6 +64,7 @@ spec:
               path: /readyz
               port: http
             periodSeconds: 5
+            timeoutSeconds: 10
 
           livenessProbe:
             httpGet:

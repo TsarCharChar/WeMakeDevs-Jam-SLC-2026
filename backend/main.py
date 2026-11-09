@@ -1,154 +1,124 @@
-
+import asyncio
+import hmac
 import os
+from contextlib import asynccontextmanager, suppress
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Query
-from elasticsearch import ApiError
-from elastic_transport import TransportError
-from pydantic import ValidationError
+from fastapi import Depends, FastAPI, Header, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
-from backend.elastic_client import get_elasticsearch_client
-from backend.geospatial import GeographicSearch
-
-
-app = FastAPI(
-    title="ConFellow API",
-    description="Backend API for the ConFellow conference companion",
-    version="1.0.0"
+from backend.attendee import router as attendee_router
+from backend.config import Settings
+from backend.maintenance import expire_periodically
+from backend.models import (
+    ConversationSearch,
+    ConversationWrite,
+    Identifier,
+    SearchResults,
+    WriteResult,
 )
+from backend.session_search import router as session_search_router
+from backend.vector_store import StoreError, VectorStore, create_client
 
 
-# ------------------------------------
-# Home endpoint
-# ------------------------------------
+def create_app(settings: Settings | None = None, store: VectorStore | None = None):
+    settings = settings or Settings.from_env()
 
-@app.get("/")
-def home():
-    return {
-        "message": "ConFellow backend is running"
-    }
+    @asynccontextmanager
+    async def lifespan(app):
+        app.state.store = store
+        app.state.configuration_error = False
+        client = None
+        cleanup = None
+        if store is None and settings.enabled:
+            try:
+                client = create_client(settings)
+                app.state.store = VectorStore(settings, client)
+                cleanup = asyncio.create_task(expire_periodically(app.state.store))
+            except ValueError:
+                app.state.configuration_error = True
+        try:
+            yield
+        finally:
+            if cleanup:
+                cleanup.cancel()
+                with suppress(asyncio.CancelledError):
+                    await cleanup
+            if client:
+                await client.aclose()
+
+    app = FastAPI(title="ConFellow API", lifespan=lifespan)
+
+    @app.exception_handler(StoreError)
+    async def store_error(_request, error):
+        return JSONResponse(status_code=error.status, content={"detail": error.message})
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_request, error):
+        # FastAPI's default response echoes invalid inputs, including transcripts.
+        errors = [
+            {key: value for key, value in item.items() if key in ("loc", "msg", "type")}
+            for item in error.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": errors})
+
+    async def authorized_store(request: Request, authorization: Annotated[str | None, Header()] = None):
+        if len(settings.service_token) < 32:
+            raise StoreError(503, "Conversation API is not configured")
+        expected = "Bearer " + settings.service_token
+        if authorization is None or not hmac.compare_digest(authorization.encode(), expected.encode()):
+            raise StoreError(401, "A valid service bearer token is required")
+        current = request.app.state.store
+        if current is None:
+            raise StoreError(503, "Vector search is not configured")
+        await current.ready()
+        return current
+
+    @app.get("/")
+    def home():
+        return {"message": "ConFellow backend is running", "version": os.getenv("APP_VERSION", "development")}
+
+    @app.get("/healthz")
+    def health():
+        return {"status": "healthy"}
+
+    @app.get("/readyz")
+    async def readiness(request: Request):
+        if request.app.state.configuration_error:
+            raise StoreError(503, "Vector search configuration is incomplete or invalid")
+        current = request.app.state.store
+        if current is None:
+            # Keep the existing preview available until credentials are provisioned.
+            return {"status": "ready", "vector_search": "disabled"}
+        await current.ready()
+        return {"status": "ready", "vector_search": "ready"}
+
+    @app.put("/conversations/{conversation_id}", response_model=WriteResult)
+    async def put_conversation(
+        conversation_id: Identifier,
+        body: ConversationWrite,
+        current: Annotated[VectorStore, Depends(authorized_store)],
+    ):
+        return await current.upsert(conversation_id, body)
+
+    @app.post("/search", response_model=SearchResults)
+    async def search(body: ConversationSearch, current: Annotated[VectorStore, Depends(authorized_store)]):
+        return await current.search(body)
+
+    @app.delete("/conversations/{conversation_id}", response_model=WriteResult)
+    async def delete_conversation(
+        conversation_id: Identifier,
+        conference: Identifier,
+        owner_id: Identifier,
+        current: Annotated[VectorStore, Depends(authorized_store)],
+    ):
+        return await current.delete(conversation_id, conference, owner_id)
+
+    app.include_router(session_search_router)
+    app.include_router(attendee_router)
+
+    return app
 
 
-# ------------------------------------
-# Kubernetes health check
-# ------------------------------------
-
-@app.get("/healthz")
-def health():
-    return {
-        "status": "healthy"
-    }
-
-
-# ------------------------------------
-# Kubernetes readiness check
-# ------------------------------------
-
-@app.get("/readyz")
-def readiness():
-    return {
-        "status": "ready"
-    }
-
-
-# ------------------------------------
-# Search conference conversations
-# ------------------------------------
-
-@app.get("/querysession")
-def query_session(
-    topic: str = Query(
-        ...,
-        min_length=2,
-        max_length=120,
-        description="Topic to search in conversation transcripts"
-    ),
-    conference: str | None = Query(default=None, min_length=1, max_length=128),
-    venue_id: str | None = Query(default=None, min_length=1, max_length=128),
-    room_id: str | None = Query(default=None, min_length=1, max_length=128),
-    zone_id: str | None = Query(default=None, min_length=1, max_length=128),
-    floor: str | None = Query(default=None, min_length=1, max_length=128),
-    lat: float | None = Query(default=None, ge=-90, le=90, allow_inf_nan=False),
-    lon: float | None = Query(default=None, ge=-180, le=180, allow_inf_nan=False),
-    radius_m: float | None = Query(default=None, gt=0, le=10000, allow_inf_nan=False),
-):
-    try:
-        geographic = GeographicSearch(
-            conference=conference, venue_id=venue_id, room_id=room_id,
-            zone_id=zone_id, floor=floor, lat=lat, lon=lon, radius_m=radius_m,
-        )
-    except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors(include_context=False)) from exc
-
-    # Create the Elasticsearch client
-    es = get_elasticsearch_client()
-
-    if es is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Elasticsearch is not configured"
-        )
-
-    # For now, search only the synthetic test document.
-    # Real attendee conversations will require authentication
-    # and per-user access controls.
-    test_document_id = os.getenv(
-        "ELASTICSEARCH_TEST_DOCUMENT_ID",
-        "setup-smoke-20261109"
-    )
-
-    try:
-        response = es.search(
-            index="conversations",
-            query={
-                "bool": {
-                    "must": [
-                        {
-                            "match": {
-                                "transcript": topic
-                            }
-                        }
-                    ],
-                    "filter": [
-                        {
-                            "term": {
-                                "consent": True
-                            }
-                        },
-                        {
-                            "ids": {
-                                "values": [test_document_id]
-                            }
-                        },
-                        *geographic.filters(),
-                    ]
-                }
-            },
-            size=5,
-            source_includes=["conference", "transcript"] + (
-                ["presence"] if geographic.enabled else []
-            ),
-        )
-
-        conversations = []
-
-        for hit in response["hits"]["hits"]:
-            source = hit["_source"]
-
-            conversation = {
-                "id": hit["_id"],
-                "conference": source.get("conference"),
-                "transcript": source.get("transcript")
-            }
-            if geographic.enabled:
-                conversation["presence"] = source.get("presence")
-            conversations.append(conversation)
-
-        return {
-            "conversations": conversations
-        }
-
-    except (ApiError, TransportError):
-        raise HTTPException(
-            status_code=503,
-            detail="Elasticsearch search is unavailable"
-        )
+app = create_app()

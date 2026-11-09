@@ -128,9 +128,14 @@ app.*.symbols
 .playwright-mcp/
 *.iml
 .env
-.venv/
-__pycache__/
 .env.*
 !.env.example
 # Application dependency lockfile
 !pubspec.lock
+
+# Python backend development
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.agent-review/

@@ -26,6 +26,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Verify backend before building
+        run: |
+          pip install -r backend/requirements-dev.txt
+          python -m ruff check backend
+          python -m pytest backend/tests -q
+
       - name: Image name and tag
         id: meta
         run: |

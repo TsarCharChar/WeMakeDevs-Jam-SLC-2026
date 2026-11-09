@@ -2,9 +2,15 @@
 
 This branch adds the first backend slice: validated opt-in check-in data,
 server-controlled expiry, an additive Elasticsearch mapping, and geographic
-filters on the existing `GET /querysession` route. It does not collect phone
-location, persist check-ins, expose a write endpoint, or enable attendee discovery.
-The route retains its consent filter and single synthetic-document allowlist.
+filters on `GET /querysession` and authenticated `POST /matches`. It does not
+collect phone location, persist check-ins, or expose a presence write endpoint.
+`/querysession` retains its single synthetic-document allowlist. `/matches`
+retains attendee authentication and the existing sharing and conference checks.
+
+Compatibility was reviewed against `origin/main` at `184b12f`, including the
+realtime transcript and shared-conversation matching changes. The public route
+now lives in `backend/session_search.py`; `backend/main.py` keeps the current app
+factory, authentication, lifecycle, and redacted validation handling.
 
 ## Data and access patterns
 
@@ -25,6 +31,13 @@ The mapping lives in `backend/mappings/conversation-presence.json`. It adds only
 the `presence` object, with strict fields, to the existing `conversations` index.
 It does not change the transcript embedding model or existing field types.
 Serverless manages shard and replica counts, so these are omitted.
+
+`server/elastic/schema.mjs` imports the same presence definition when creating
+new indices. Its setup verifier checks nested mapping fields recursively. On an
+existing index without presence, setup requires the explicit additive migration
+below; it does not mutate an existing schema automatically. The separate service
+vector API (`backend/schema.py` and `POST /search`) uses a different schema and
+is unchanged by this feature.
 
 With the Elastic CLI configured for the intended project, first inspect its
 mapping. Review any existing `presence` field for compatibility. A conflicting
@@ -48,10 +61,10 @@ use `ignore_unmapped`); ordinary topic searches continue to work.
 `ConversationCheckIn` requires a strict boolean `location_consent: true`.
 Manual and QR check-ins require a room or zone; device check-ins require valid
 coordinates and accuracy. Clients cannot supply presence timestamps. A future
-authenticated write handler must verify conference membership, conversation
-ownership, participant consent, and that the selected room/zone belongs to the
-venue before using this helper. Conference IDs in search parameters are filters,
-not proof of membership.
+presence write handler must reuse the existing attendee authentication, derive
+ownership from the token, verify participant consent, and verify that the selected
+room/zone belongs to the venue before using this helper. Conference IDs in search
+parameters are filters; `/matches` additionally checks authenticated membership.
 
 ```python
 from datetime import datetime, timezone
@@ -75,21 +88,25 @@ Presence defaults to five minutes, allows a server-selected TTL of 1–900 secon
 and never outlives its conversation. Renew only on a new explicit check-in.
 Transcript updates must preserve the existing timestamp rather than renew it.
 
-The intended ingestion integration includes `presence` in the next full
-conversation revision and preserves external version ordering. Replacing the
-presence object must remove fields absent from the new check-in (for example,
+The current attendee transcript writer uses sequence-number/primary-term guards,
+idempotent revision checks, and immutable finalized segments. Presence persistence
+must respect those rules; do not introduce the older Node adapter's external
+versioning into this path. A presence handler for finalized, shared segments can
+follow the ownership and concurrency checks in `backend/attendee/sharing.py`.
+Replacing presence must remove fields absent from the new check-in (for example,
 old GPS coordinates after a room-only check-in). Checkout must clear presence or
-set `shared` to false in a new revision. Do not naively use partial updates on the
-semantic document: they can re-run inference and interfere with the transcript
-writer's revision scheme. This persistence coordination remains to be implemented.
+set `shared` to false. Semantic-document updates can re-run inference, so account
+for that cost when implementing persistence. This coordination remains unimplemented.
 
 Expiry filters hide records; they do not physically delete stored location data.
-Retention cleanup remains a separate backend job.
+The service vector API has its own cleanup task, which does not clean up the
+attendee `conversations` index. Presence/attendee retention cleanup remains to be
+wired for that index.
 
 ## Search contract
 
 Existing `GET /querysession?topic=local%20AI` requests retain their response shape.
-Optional parameters:
+`POST /matches` accepts the same optional geographic fields in its JSON body:
 
 - `conference`: exact conference filter; required with any geographic filter.
 - `venue_id`, `room_id`, `zone_id`, `floor`: exact identifiers. Room, zone and floor
@@ -104,31 +121,58 @@ Examples (the configured synthetic fixture must have matching, fresh presence):
 /querysession?topic=local%20AI&conference=__setup_smoke__&lat=40.7608&lon=-111.8910&radius_m=100
 ```
 
+For authenticated matching, send an attendee bearer token and a body such as:
+
+```json
+{
+  "conference": "cnh",
+  "interests": "local AI",
+  "venue_id": "conference-center",
+  "room_id": "room-a"
+}
+```
+
+`/matches` also requires a conference-visible, consenting, finalized transcript
+and excludes the requester's own recordings. Geographic filters never relax those
+conditions. Existing matches without presence still appear in ordinary matching;
+they are excluded only when a geographic filter is requested. Saved-profile
+interests continue to work when `interests` is omitted.
+
 All geographic conditions combine with AND. Searches require shared, unexpired
 presence, a non-future update time, and an unexpired conversation. Documents
 without presence are excluded. Semantic relevance still determines ordering;
 this version does not sort by distance or calculate walking routes. Radius is
 geographic distance and does not establish a room or floor match.
 
-Geographic results include the `presence` object alongside the existing `id`,
-`conference`, and `transcript` fields. Non-geographic responses omit presence.
-Invalid query combinations return 422 before contacting Elasticsearch.
+Synthetic geographic `/querysession` results include `presence` alongside `id`,
+`conference`, and `transcript`. Non-geographic responses omit presence.
+`/matches` keeps its existing excerpt/score response and does not expose the
+author or precise coordinates. Invalid query combinations return a redacted 422
+before executing a search. Attendee authentication may still read the token record.
+
+The current Flutter client uses attendee content search for talks/moments and the
+legacy synthetic route for smoke checks. It does not yet send geographic filters
+or connect the new `/matches` route to location controls. `GET /search` (content
+search) and the service-only `POST /search` have no new geographic parameters.
 
 ## Verification and next integration steps
 
 ```powershell
 python -m venv .venv
 .venv/Scripts/python.exe -m pip install -r backend/requirements-dev.txt
-.venv/Scripts/python.exe -m unittest discover -s backend/tests -v
+.venv/Scripts/python.exe -m ruff check backend
+.venv/Scripts/python.exe -m pytest backend/tests -q
+node --test server/elastic/store.test.mjs
 ```
 
 Tests cover check-in consent, coordinates, scope validation, expiry boundaries,
-query construction, response compatibility, and the synthetic access restriction.
+query construction, response compatibility, the synthetic access restriction,
+authenticated matching, wrong-conference rejection, and nested mapping validation.
 They mock Elasticsearch; a live test still needs a separately scoped synthetic
 fixture with fresh presence after the additive mapping is applied. The existing
 setup smoke fixture is expired and therefore should not match a geographic query.
 
-Next: authenticated ingestion/check-in/checkout persistence, venue/room lookup,
+Next: authenticated check-in/checkout persistence, venue/room lookup,
 Flutter opt-in check-in and search controls, expiry cleanup, and live Elastic
 verification. QR scanning, automatic GPS collection, polygons, and heatmaps are
 outside this initial slice.

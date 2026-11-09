@@ -1,18 +1,18 @@
 import json
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
 import unittest
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from elastic_transport import TransportError
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from backend.config import Settings
 from backend.geospatial import ConversationCheckIn, GeographicSearch, build_presence
-from backend.main import app
+from backend.main import create_app
 
-
-NOW = datetime(2026, 11, 9, 18, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 9, 18, 0, tzinfo=UTC)
 
 
 class CheckInTests(unittest.TestCase):
@@ -93,10 +93,10 @@ class CheckInTests(unittest.TestCase):
 
 class SearchTests(unittest.TestCase):
     def setUp(self):
-        self.client = TestClient(app)
+        self.client = self.enterContext(TestClient(create_app(Settings())))
         self.es = Mock()
         self.es.search.return_value = {"hits": {"hits": []}}
-        self.mock_client = patch("backend.main.get_elasticsearch_client", return_value=self.es)
+        self.mock_client = patch("backend.session_search.get_elasticsearch_client", return_value=self.es)
         self.mock_client.start()
         self.addCleanup(self.mock_client.stop)
         self.env = patch.dict("os.environ", {"ELASTICSEARCH_TEST_DOCUMENT_ID": "synthetic"})
@@ -179,7 +179,7 @@ class SearchTests(unittest.TestCase):
     def test_unconfigured_or_unavailable_database_returns_503(self):
         self.es.search.side_effect = TransportError("unavailable")
         self.assertEqual(self.search().status_code, 503)
-        with patch("backend.main.get_elasticsearch_client", return_value=None):
+        with patch("backend.session_search.get_elasticsearch_client", return_value=None):
             self.assertEqual(self.search().status_code, 503)
 
 
