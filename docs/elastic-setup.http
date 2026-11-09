@@ -149,6 +149,11 @@ PUT /people
         "index": false,
         "doc_values": false
       },
+      "display_name": {
+        "type": "keyword",
+        "index": false,
+        "doc_values": false
+      },
       "interests": {
         "type": "semantic_text",
         "inference_id": ".jina-embeddings-v5-text-small"

@@ -27,6 +27,7 @@ export function mappings(inferenceId = DEFAULT_INFERENCE_ID) {
     },
     people: {
       handle: keyword, token_hash: { type: 'keyword', index: false, doc_values: false },
+      display_name: { type: 'keyword', index: false, doc_values: false },
       interests: semantic, topics: keyword, starred_talks: keyword, last_active: date,
     },
     moments: { handle: keyword, source: keyword, gist: semantic, topics: keyword, at: date },
