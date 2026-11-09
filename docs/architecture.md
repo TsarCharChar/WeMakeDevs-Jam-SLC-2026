@@ -1,5 +1,17 @@
 # Architecture outline
 
+## Current MVP direction (supersedes conflicting sections below)
+
+The agreed MVP is a native Flutter app for Android and iOS. Its first screen has two blobs: **Press to record conversation** and **Find me conversations**.
+
+- Recording uses bundled Whisper large-v3-turbo Q5_0 through whisper.cpp on the device and displays live transcript updates. Tap again to stop; the MVP retains the three-minute limit and stops recording when backgrounded.
+- Search accepts **typed interests**. For now it is an explicitly labeled preview with no backend requests or fabricated matches.
+- The future server receives live transcript updates, embeds text, and indexes conversations for similarity search. This replaces the earlier review-before-publish and approved-summaries-only flow. The transport, authentication, retention, and conversation visibility contract still need implementation decisions.
+- Whisper partials contain the full revised transcript. Future ingestion must upsert a conversation/revision rather than embed every partial as a separate conversation. Search will embed typed interests using the same embedding model as indexed conversations and compare compatible vectors.
+- Recording remains explicit and requires participants' permission. The current MVP uploads nothing and keeps transcripts in session memory only.
+
+The original hackathon sketch below remains as historical backend context; its mobile-web-only and no-native-app scope no longer describes the chosen frontend.
+
 Working sketch for our Cloud Native Hackathon project (Elasticsearch track). Expect it to change as we build.
 
 Submissions close at 5:30 PM MT. Aim to freeze code at 5:00.
