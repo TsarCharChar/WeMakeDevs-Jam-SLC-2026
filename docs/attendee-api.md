@@ -220,9 +220,13 @@ a timezone: only messages after it).
 ```
 
 Messages are the newest page, oldest first. To poll, pass the `at` of the last message as `after`. `people` is how
-many different attendees have written in the room, counted over the whole room. `author` is a label that is stable
-inside one room and different in every other room, so a chat cannot be used to follow someone between rooms. The
-handle is never returned. A room nobody has written in returns an empty list.
+many different attendees have written in the room, counted over the whole room. A room nobody has written in returns
+an empty list.
+
+`author` is the name to show. If the person chose their handle (for example `ada`), it is that name. If the app
+generated the handle for the device (it starts with `cf_`), it is a label such as `guest-11ca1f` that is stable
+inside one room and different in every other room, so it cannot be followed between rooms. So a profile needs only
+a simple name: claim it as the `handle` in `PUT /me`.
 
 There is no moderation or rate limit yet.
 

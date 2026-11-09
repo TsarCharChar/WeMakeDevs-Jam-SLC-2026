@@ -94,10 +94,13 @@ def test_post_does_not_create_a_missing_index(client, elastic):
     assert elastic.messages == {}
 
 
-def test_read_returns_the_newest_page_oldest_first_without_handles(client, elastic):
+GENERATED = "cf_0123456789abcdef0123"
+
+
+def test_read_returns_the_newest_page_oldest_first(client, elastic):
     headers = register(client)
     elastic.client.search.return_value = page(
-        hit("m2", "grace", "Yes, see you there", "2026-11-09T12:01:00Z"),
+        hit("m2", GENERATED, "Yes, see you there", "2026-11-09T12:01:00Z"),
         hit("m1", "ada", "Anyone going?", "2026-11-09T12:00:00Z"),
         people=2,
     )
@@ -110,10 +113,11 @@ def test_read_returns_the_newest_page_oldest_first_without_handles(client, elast
         ("m1", "Anyone going?", True),
         ("m2", "Yes, see you there", False),
     ]
-    authors = [m["author"] for m in body["messages"]]
-    assert all(author.startswith("guest-") and len(author) == 12 for author in authors)
-    assert authors[0] != authors[1]
-    assert "ada" not in response.text and "grace" not in response.text and "handle" not in response.text
+    # ada chose that name, so it is shown. The other handle was generated for a device, so it is not.
+    mine, other = (m["author"] for m in body["messages"])
+    assert mine == "ada"
+    assert other.startswith("guest-") and len(other) == 12
+    assert GENERATED not in response.text and "handle" not in response.text
 
 
 def test_read_asks_only_for_this_room_and_counts_people_over_the_whole_room(client, elastic):
@@ -132,9 +136,9 @@ def test_read_asks_only_for_this_room_and_counts_people_over_the_whole_room(clie
     assert "range" not in str(filters[2:])
 
 
-def test_author_labels_are_stable_in_a_room_and_differ_between_rooms(client, elastic):
+def test_guest_labels_are_stable_in_a_room_and_differ_between_rooms(client, elastic):
     headers = register(client)
-    elastic.client.search.return_value = page(hit("m1", "grace", "hello", "2026-11-09T12:00:00Z"), people=1)
+    elastic.client.search.return_value = page(hit("m1", GENERATED, "hello", "2026-11-09T12:00:00Z"), people=1)
     first = client.get(ROOM, params={"conference": CONFERENCE}, headers=headers).json()["messages"][0]["author"]
     again = client.get(ROOM, params={"conference": CONFERENCE}, headers=headers).json()["messages"][0]["author"]
     other = client.get("/rooms/topic:Wasm/messages", params={"conference": CONFERENCE}, headers=headers)

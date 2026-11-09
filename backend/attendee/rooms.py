@@ -52,9 +52,15 @@ def room_key(room: str) -> str:
     return room.strip().casefold()
 
 
+GENERATED_HANDLE = "cf_"
+
+
 def author_label(conference: str, room: str, handle: str) -> str:
-    # Stable inside one room and different in every other, so a chat cannot be used to follow a
-    # person from room to room. The handle is the profile key and is never returned.
+    # A name the person chose for their profile is shown as it is: that is what they picked it for.
+    if handle and not handle.startswith(GENERATED_HANDLE):
+        return handle
+    # A handle the app generated for the device is not a name. It becomes a label that is stable
+    # inside one room and different in every other, so it cannot be followed from room to room.
     digest = hashlib.sha256(json.dumps([conference, room, handle]).encode()).hexdigest()
     return "guest-" + digest[:6]
 
