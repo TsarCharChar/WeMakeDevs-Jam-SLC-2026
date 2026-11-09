@@ -94,14 +94,18 @@ class LocalNoteSummary {
 }
 
 /// Immutable snapshot of on-device attendee state and preferences.
+///
+/// Attendee bearer tokens are never stored here or written to plain JSON;
+/// `TranscriptSync` manages credentials in `FlutterSecureStorage`.
 @immutable
 class PhoneProfile {
   PhoneProfile({
     required this.handle,
     this.conference = defaultConference,
-    this.attendeeToken,
+    String displayName = '',
     String interests = '',
     this.reviewBeforeSending = false,
+    this.onboardingDone = false,
     Iterable<String> selectedTopics = const [],
     Iterable<String> goingTalkIds = const [],
     Iterable<LocalNoteSummary> savedNotes = const [],
@@ -110,6 +114,7 @@ class PhoneProfile {
          identifierPattern.hasMatch(conference),
          'Invalid conference identifier: $conference',
        ),
+       displayName = _sanitizeDisplayName(displayName),
        interests = _sanitizeInterests(interests),
        selectedTopics = List.unmodifiable(_cleanTopics(selectedTopics)),
        goingTalkIds = List.unmodifiable(_cleanTalkIds(goingTalkIds)),
@@ -142,15 +147,18 @@ class PhoneProfile {
   /// Conference identifier (`'cnh'` by default).
   final String conference;
 
-  /// Bearer token issued once by `PUT /me` (`201`). Never logged or put in URLs.
-  final String? attendeeToken;
+  /// Optional 1..60-rune one-line display name shown in chats (`display_name`).
+  final String displayName;
 
-  /// Evolved interest summary (`<= 1000` chars) sent on `PUT /me`.
+  /// Typed interest summary (`<= 1000` runes) configured by the attendee.
   final String interests;
 
   /// Off by default per UX decision; when enabled, finished notes wait for
   /// explicit Send or Discard instead of Undo auto-send.
   final bool reviewBeforeSending;
+
+  /// True once the attendee has completed or skipped first-launch onboarding.
+  final bool onboardingDone;
 
   final List<String> selectedTopics;
   final List<String> goingTalkIds;
@@ -173,29 +181,27 @@ class PhoneProfile {
     for (final note in savedNotes) ...note.topics,
   };
 
-  /// Synthesizes the `<= 1000`-character `interests` field for `PUT /me`
-  /// without leaking unshared private note text.
+  /// Synthesizes the `<= 1000`-rune `interests` field for `PUT /me` strictly
+  /// from typed [interests] and [combinedProfileTopics].
+  ///
+  /// Never includes note `sharedText` or raw `transcript` text.
   String buildProfileInterests() {
-    if (interests.isNotEmpty) {
-      return _sanitizeInterests(interests);
-    }
+    final cleanTyped = _sanitizeInterests(interests);
     final topics = combinedProfileTopics;
-    final sharedSnippets = [
-      for (final note in savedNotes)
-        if (note.shared && note.sharedText != null && note.sharedText!.isNotEmpty)
-          note.sharedText!,
-    ];
+    final topicClause = topics.isNotEmpty ? 'Topics: ${topics.join(', ')}' : '';
     final parts = <String>[
-      if (topics.isNotEmpty) 'Topics: ${topics.join(', ')}',
-      ...sharedSnippets.take(2),
+      if (cleanTyped.isNotEmpty) cleanTyped,
+      if (topicClause.isNotEmpty && cleanTyped != topicClause) topicClause,
     ];
-    return _sanitizeInterests(parts.join(' · '));
+    return _sanitizeInterests(parts.join('; '));
   }
 
   /// Exact JSON body for `PUT /me` (`ProfileWrite` with `extra="forbid"`).
-  Map<String, Object?> toPutMeBody() => {
+  Map<String, Object?> toPutMeBody({bool includeDisplayName = true}) => {
     'handle': handle,
     'conference': conference,
+    if (includeDisplayName && displayName.isNotEmpty)
+      'display_name': displayName,
     'interests': buildProfileInterests(),
     'topics': combinedProfileTopics,
     'starred_talks': goingTalkIds.length <= 100
@@ -206,21 +212,20 @@ class PhoneProfile {
   PhoneProfile copyWith({
     String? handle,
     String? conference,
-    String? attendeeToken,
-    bool clearAttendeeToken = false,
+    String? displayName,
     String? interests,
     bool? reviewBeforeSending,
+    bool? onboardingDone,
     Iterable<String>? selectedTopics,
     Iterable<String>? goingTalkIds,
     Iterable<LocalNoteSummary>? savedNotes,
   }) => PhoneProfile(
     handle: handle ?? this.handle,
     conference: conference ?? this.conference,
-    attendeeToken: clearAttendeeToken
-        ? null
-        : (attendeeToken ?? this.attendeeToken),
+    displayName: displayName ?? this.displayName,
     interests: interests ?? this.interests,
     reviewBeforeSending: reviewBeforeSending ?? this.reviewBeforeSending,
+    onboardingDone: onboardingDone ?? this.onboardingDone,
     selectedTopics: selectedTopics ?? this.selectedTopics,
     goingTalkIds: goingTalkIds ?? this.goingTalkIds,
     savedNotes: savedNotes ?? this.savedNotes,
@@ -230,10 +235,10 @@ class PhoneProfile {
     'handle': handle,
     'ownerId': handle,
     'conference': conference,
-    if (attendeeToken != null && attendeeToken!.isNotEmpty)
-      'attendeeToken': attendeeToken,
+    if (displayName.isNotEmpty) 'displayName': displayName,
     if (interests.isNotEmpty) 'interests': interests,
     'reviewBeforeSending': reviewBeforeSending,
+    'onboardingDone': onboardingDone,
     'selectedTopics': selectedTopics,
     'goingTalkIds': goingTalkIds,
     'savedNotes': [for (final note in savedNotes) note.toJson()],
@@ -259,18 +264,12 @@ class PhoneProfile {
         ? rawConference.trim()
         : defaultConference;
 
-    final rawToken = json['attendeeToken'];
-    // If handle had to be regenerated, any previous token no longer matches it.
-    final preservedToken =
-        (rawHandle is String &&
-            rawHandle.trim() == validHandle &&
-            rawToken is String &&
-            rawToken.trim().isNotEmpty)
-        ? rawToken.trim()
-        : null;
-
+    final rawDisplayName = json['displayName'] ?? json['display_name'];
     final rawInterests = json['interests'];
     final reviewBeforeSending = json['reviewBeforeSending'] == true;
+    final onboardingDone = json.containsKey('onboardingDone')
+        ? json['onboardingDone'] == true
+        : true;
 
     final selectedTopics = <String>[];
     if (json['selectedTopics'] case final List<Object?> rawTopics) {
@@ -304,34 +303,34 @@ class PhoneProfile {
     return PhoneProfile(
       handle: validHandle,
       conference: validConference,
-      attendeeToken: preservedToken,
+      displayName: rawDisplayName is String ? rawDisplayName : '',
       interests: rawInterests is String ? rawInterests : '',
       reviewBeforeSending: reviewBeforeSending,
+      onboardingDone: onboardingDone,
       selectedTopics: selectedTopics,
       goingTalkIds: goingTalkIds,
       savedNotes: savedNotes,
     );
   }
 
-  /// Redacted string representation: never exposes [attendeeToken].
   @override
   String toString() =>
       'PhoneProfile(handle: $handle, conference: $conference, '
-      'hasToken: ${attendeeToken != null}, '
       'reviewBeforeSending: $reviewBeforeSending, '
       'selectedTopics: ${selectedTopics.length}, '
       'goingTalkIds: ${goingTalkIds.length}, '
       'savedNotes: ${savedNotes.length})';
 }
 
-/// Persistent local store for the phone's opaque handle, attendee token,
-/// preferences, selected topics, starred talks, and saved note metadata.
+/// Persistent local store for the phone's opaque handle, preferences,
+/// selected topics, starred talks, and saved note metadata.
 class PhoneProfileStore extends ChangeNotifier {
   PhoneProfileStore({
     ProfileFileProvider? fileProvider,
     ProfileDirectoryProvider? directoryProvider,
     Random? random,
-  }) : _random = random ?? Random.secure(),
+  }) : _inMemory = false,
+       _random = random ?? Random.secure(),
        _fileProvider =
            fileProvider ??
            (() async {
@@ -340,10 +339,18 @@ class PhoneProfileStore extends ChangeNotifier {
              return File('${dir.path}/confellow_profile.json');
            });
 
+  /// Pure in-memory store for `FakeAsync` widget tests without `dart:io` locks.
+  PhoneProfileStore.inMemory({Random? random})
+    : _inMemory = true,
+      _random = random ?? Random.secure(),
+      _fileProvider = null;
+
   static const String handlePrefix = 'cf_';
 
+  final bool _inMemory;
   final Random _random;
-  final ProfileFileProvider _fileProvider;
+  final ProfileFileProvider? _fileProvider;
+  String? _memoryJson;
 
   PhoneProfile? _profile;
   Future<PhoneProfile>? _pendingLoad;
@@ -374,24 +381,38 @@ class PhoneProfileStore extends ChangeNotifier {
 
   Future<PhoneProfile> _loadFromDisk() async {
     try {
-      final file = await _fileProvider();
-      if (await file.exists()) {
-        final raw = await file.readAsString();
-        final Object? decoded = jsonDecode(raw);
-        var needsSave = false;
-        final loaded = PhoneProfile.fromJson(
-          decoded,
-          generateHandle: () {
-            needsSave = true;
-            return generateHandle();
-          },
-        );
-        _profile = loaded;
-        if (needsSave) {
-          await _enqueueSave(loaded);
+      if (_inMemory) {
+        if (_memoryJson != null) {
+          final Object? decoded = jsonDecode(_memoryJson!);
+          final loaded = PhoneProfile.fromJson(
+            decoded,
+            generateHandle: generateHandle,
+          );
+          _profile = loaded;
+          notifyListeners();
+          return loaded;
         }
-        notifyListeners();
-        return loaded;
+      } else {
+        final file = await _fileProvider!();
+        if (await file.exists()) {
+          final raw = await file.readAsString();
+          final Object? decoded = jsonDecode(raw);
+          var needsSave =
+              decoded is Map && decoded.containsKey('attendeeToken');
+          final loaded = PhoneProfile.fromJson(
+            decoded,
+            generateHandle: () {
+              needsSave = true;
+              return generateHandle();
+            },
+          );
+          _profile = loaded;
+          if (needsSave) {
+            await _enqueueSave(loaded);
+          }
+          notifyListeners();
+          return loaded;
+        }
       }
     } catch (_) {
       // Corrupt or unreadable state falls back cleanly to a fresh local profile.
@@ -402,6 +423,40 @@ class PhoneProfileStore extends ChangeNotifier {
     await _enqueueSave(initial);
     notifyListeners();
     return initial;
+  }
+
+  Future<PhoneProfile> setDisplayName(String displayName) async {
+    final sanitized = _sanitizeDisplayName(displayName);
+    final current = await load();
+    if (current.displayName == sanitized) return current;
+    return _commit(current.copyWith(displayName: sanitized));
+  }
+
+  Future<PhoneProfile> completeOnboarding({
+    String? displayName,
+    Iterable<String>? selectedTopics,
+    String? interests,
+  }) async {
+    final current = await load();
+    return _commit(
+      current.copyWith(
+        displayName: displayName != null
+            ? _sanitizeDisplayName(displayName)
+            : current.displayName,
+        selectedTopics: selectedTopics ?? current.selectedTopics,
+        interests: interests != null
+            ? _sanitizeInterests(interests)
+            : current.interests,
+        onboardingDone: true,
+      ),
+    );
+  }
+
+  Future<PhoneProfile> setInterests(String interests) async {
+    final sanitized = _sanitizeInterests(interests);
+    final current = await load();
+    if (current.interests == sanitized) return current;
+    return _commit(current.copyWith(interests: sanitized));
   }
 
   Future<PhoneProfile> setReviewBeforeSending(bool enabled) async {
@@ -475,33 +530,14 @@ class PhoneProfileStore extends ChangeNotifier {
     return _commit(current.copyWith(savedNotes: updated));
   }
 
-  /// Stores the bearer token returned by `PUT /me` (`201`).
-  Future<PhoneProfile> saveAttendeeToken(
-    String token, {
-    String? handle,
-    String? conference,
-  }) async {
-    final trimmed = token.trim();
-    if (trimmed.isEmpty) return load();
-    final current = await load();
-    return _commit(
-      current.copyWith(
-        handle: handle ?? current.handle,
-        conference: conference ?? current.conference,
-        attendeeToken: trimmed,
-      ),
-    );
-  }
-
-  /// Rotates to a newly generated handle and clears any stale bearer token
-  /// (used on `409` handle collision during initial claim or `401` expiry).
+  /// Rotates to a newly generated handle (used on `409` handle collision during
+  /// initial claim).
   Future<PhoneProfile> rotateHandle({String? conference}) async {
     final current = await load();
     return _commit(
       current.copyWith(
         handle: generateHandle(),
         conference: conference ?? current.conference,
-        clearAttendeeToken: true,
       ),
     );
   }
@@ -515,8 +551,12 @@ class PhoneProfileStore extends ChangeNotifier {
 
   Future<void> _enqueueSave(PhoneProfile snapshot) {
     final payload = jsonEncode(snapshot.toJson());
+    if (_inMemory) {
+      _memoryJson = payload;
+      return _writeChain = Future<void>.value();
+    }
     return _writeChain = _writeChain.then((_) async {
-      final file = await _fileProvider();
+      final file = await _fileProvider!();
       await file.parent.create(recursive: true);
       final tempFile = File('${file.path}.tmp');
       await tempFile.writeAsString(payload, flush: true);
@@ -538,6 +578,9 @@ String? _sanitizeSingleLine(String? input, {required int maxRunes}) {
   if (runes.length <= maxRunes) return collapsed;
   return String.fromCharCodes(runes.take(maxRunes)).trimRight();
 }
+
+String _sanitizeDisplayName(String input) =>
+    _sanitizeSingleLine(input, maxRunes: 60) ?? '';
 
 String _sanitizeInterests(String input) =>
     _sanitizeSingleLine(input, maxRunes: 1000) ?? '';

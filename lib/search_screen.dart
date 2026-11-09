@@ -159,7 +159,7 @@ class _SearchScreenState extends State<SearchScreen> {
                 Semantics(
                   liveRegion: true,
                   child: PhosphorSurfaceCard(
-                    accentBorderColor: WavelengthColors.micHotCoral,
+                    accentBorderColor: WavelengthColors.warningAmber,
                     child: Text(error!, style: WavelengthTypography.body),
                   ),
                 ),

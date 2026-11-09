@@ -20,7 +20,6 @@ double computePcmLevel(Uint8List bytes) {
   if (sampleCount == 0) return 0;
   final data = ByteData.sublistView(bytes);
   var sumSquares = 0.0;
-  // Stride by up to 4 samples on large chunks to keep UI callback ultra-light.
   final step = sampleCount > 512 ? 4 : 1;
   var counted = 0;
   for (var i = 0; i < sampleCount; i += step) {
@@ -31,19 +30,17 @@ double computePcmLevel(Uint8List bytes) {
   if (counted == 0) return 0;
   final rms = math.sqrt(sumSquares / counted);
   if (rms < 0.002) return 0;
-  // Map roughly -48 dBFS .. -6 dBFS onto 0.0 .. 1.0 with gentle curve.
   final db = 20.0 * (math.log(rms) / math.ln10);
   return ((db + 48.0) / 42.0).clamp(0.0, 1.0);
 }
 
 class RecordingController extends ChangeNotifier {
-  RecordingController({this.onNoteCompleted, this.sync});
+  RecordingController({this.sync, this.onNoteCompleted});
 
   static const Duration maxDuration = Duration(minutes: 3);
-  static const int waveformBarCount = 28;
 
-  final ValueChanged<String>? onNoteCompleted;
   final TranscriptSync? sync;
+  final ValueChanged<String>? onNoteCompleted;
   Future<void> closed = Future.value();
   final _recorder = AudioRecorder();
   WhisperLiveSession? _session;
@@ -60,13 +57,6 @@ class RecordingController extends ChangeNotifier {
   String? error;
   double micLevel = 0;
   Duration elapsed = Duration.zero;
-  final List<double> _bars = List<double>.filled(
-    waveformBarCount,
-    0,
-    growable: true,
-  );
-
-  List<double> get waveformBars => List<double>.unmodifiable(_bars);
 
   bool get busy =>
       phase == RecordingPhase.preparing || phase == RecordingPhase.stopping;
@@ -142,13 +132,7 @@ class RecordingController extends ChangeNotifier {
       _audio = stream.listen(
         (bytes) {
           _session?.feed(bytes);
-          final rawLevel = computePcmLevel(bytes);
-          // Smooth attack/decay for fluid wave physics.
-          micLevel = rawLevel > micLevel
-              ? micLevel * 0.35 + rawLevel * 0.65
-              : micLevel * 0.72 + rawLevel * 0.28;
-          if (_bars.length >= waveformBarCount) _bars.removeAt(0);
-          _bars.add(micLevel);
+          micLevel = computePcmLevel(bytes);
           update();
         },
         onError: (Object e) {
@@ -197,12 +181,13 @@ class RecordingController extends ChangeNotifier {
     _clock = null;
     _startedAt = null;
     micLevel = 0;
-    for (var i = 0; i < _bars.length; i++) {
-      _bars[i] = 0;
+    if (_audio != null ||
+        phase == RecordingPhase.recording ||
+        phase == RecordingPhase.stopping) {
+      try {
+        await _recorder.stop();
+      } catch (_) {}
     }
-    try {
-      await _recorder.stop();
-    } catch (_) {}
     await _audio?.cancel();
     _audio = null;
     final session = _session;
@@ -246,9 +231,7 @@ class RecordingController extends ChangeNotifier {
     elapsed = Duration.zero;
     status = transcript.isEmpty
         ? 'No speech detected. Try again.'
-        : sync?.enabled == true
-        ? 'Note captured · check private saving status'
-        : 'Note captured · kept on this phone';
+        : 'Note captured';
     update();
     if (notifyCompleted && !_disposed) {
       onNoteCompleted?.call(transcript.trim());

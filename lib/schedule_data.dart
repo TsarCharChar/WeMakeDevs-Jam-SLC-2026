@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show immutable;
 import 'package:flutter/services.dart' show AssetBundle, rootBundle;
@@ -169,6 +170,61 @@ class WavelengthSpace {
   final bool isGoing;
 }
 
+@immutable
+class ScopeTopicEntry {
+  const ScopeTopicEntry({
+    required this.id,
+    required this.label,
+    required this.count,
+    required this.ring,
+    required this.people,
+    required this.why,
+    required this.linkedTopics,
+    this.featuredTalk,
+  });
+
+  final String id;
+  final String label;
+  final int count;
+  final int ring; // 0, 1, or 2
+  final int people; // 0 unless backed by real backend moment count
+  final String why;
+  final List<String> linkedTopics;
+  final ScheduleTalk? featuredTalk;
+}
+
+@immutable
+class ScopeTalkEntry {
+  const ScopeTalkEntry({
+    required this.id,
+    required this.topicId,
+    required this.talk,
+    required this.going,
+    required this.why,
+    required this.linkedTopics,
+  });
+
+  final String id;
+  final String topicId;
+  final ScheduleTalk talk;
+  final bool going;
+  final String why;
+  final List<String> linkedTopics;
+}
+
+@immutable
+class ScopeGraphData {
+  const ScopeGraphData({
+    required this.topics,
+    required this.talks,
+    required this.edges,
+  });
+
+  final List<ScopeTopicEntry> topics;
+  final List<ScopeTalkEntry> talks;
+  final List<({String source, String target, int weight})> edges;
+}
+
 /// Bundled KubeCon schedule catalog, topic matcher, and qualitative Space ranker.
 class ScheduleCatalog {
   ScheduleCatalog._({
@@ -178,6 +234,7 @@ class ScheduleCatalog {
     required this._canonicalByLower,
     required this._matchPhrases,
     required this._effectiveTalkTopics,
+    required this._abstractTopicsById,
     required this._topicSessionCounts,
   });
 
@@ -274,6 +331,8 @@ class ScheduleCatalog {
     'flatcar linux': 'Flatcar Container Linux',
     'fluxcd': 'Flux',
     'flux cd': 'Flux',
+    'gpu': 'AI Inference + Agentic',
+    'gpu scheduling': 'KAI Scheduler',
     'intoto': 'in-toto',
     'accessibility': 'Inclusion + Accessibility',
     'istio day': 'Istio',
@@ -318,6 +377,7 @@ class ScheduleCatalog {
   final Map<String, String> _canonicalByLower;
   final List<_MatchPhrase> _matchPhrases;
   final Map<String, List<String>> _effectiveTalkTopics;
+  final Map<String, List<String>> _abstractTopicsById;
   final Map<String, int> _topicSessionCounts;
 
   factory ScheduleCatalog.fromTalks(Iterable<ScheduleTalk> talks) {
@@ -364,6 +424,7 @@ class ScheduleCatalog {
     ]..sort((a, b) => b.phrase.length.compareTo(a.phrase.length));
 
     final effectiveTalkTopics = <String, List<String>>{};
+    final abstractTopicsById = <String, List<String>>{};
     final topicSessionCounts = <String, int>{
       for (final topic in vocabulary) topic: 0,
     };
@@ -387,6 +448,13 @@ class ScheduleCatalog {
       for (final topic in frozen) {
         topicSessionCounts[topic] = (topicSessionCounts[topic] ?? 0) + 1;
       }
+
+      if (!talk.isLogistics && talk.abstractText.isNotEmpty) {
+        final inAbstract = _matchText(talk.abstractText, matchPhrases);
+        if (inAbstract.isNotEmpty) {
+          abstractTopicsById[talk.id] = List<String>.unmodifiable(inAbstract);
+        }
+      }
     }
 
     return ScheduleCatalog._(
@@ -396,6 +464,7 @@ class ScheduleCatalog {
       canonicalByLower: canonicalByLower,
       matchPhrases: matchPhrases,
       effectiveTalkTopics: effectiveTalkTopics,
+      abstractTopicsById: abstractTopicsById,
       topicSessionCounts: topicSessionCounts,
     );
   }
@@ -479,6 +548,559 @@ class ScheduleCatalog {
       }
     }
     return List.unmodifiable(result);
+  }
+
+  /// Strongest session co-occurrence edges among [topicLabels], capped at
+  /// [maxEdges].
+  List<({String source, String target, int weight})> coOccurringEdgesForTopics(
+    Iterable<String> topicLabels, {
+    int maxEdges = 15,
+  }) {
+    if (maxEdges <= 0) return const [];
+    final allowed = canonicalizeTopics(topicLabels).toSet();
+    if (allowed.length < 2) return const [];
+
+    final edgeWeights = <(String, String), int>{};
+    for (final talk in talks) {
+      if (talk.isLogistics) continue;
+      final present = [
+        for (final t in (_effectiveTalkTopics[talk.id] ?? const <String>[]))
+          if (allowed.contains(t)) t,
+      ]..sort();
+      for (var i = 0; i < present.length; i++) {
+        for (var j = i + 1; j < present.length; j++) {
+          final pair = (present[i], present[j]);
+          edgeWeights[pair] = (edgeWeights[pair] ?? 0) + 1;
+        }
+      }
+    }
+
+    final sorted = edgeWeights.entries.toList()
+      ..sort((a, b) {
+        final byWeight = b.value.compareTo(a.value);
+        if (byWeight != 0) return byWeight;
+        final bySource = a.key.$1.toLowerCase().compareTo(
+          b.key.$1.toLowerCase(),
+        );
+        if (bySource != 0) return bySource;
+        return a.key.$2.toLowerCase().compareTo(b.key.$2.toLowerCase());
+      });
+
+    return List.unmodifiable([
+      for (final entry in sorted.take(maxEdges))
+        (source: entry.key.$1, target: entry.key.$2, weight: entry.value),
+    ]);
+  }
+
+  /// Canonical schedule topics (excluding [selectedTopics] themselves) that
+  /// co-occur on at least one non-logistics session with [selectedTopics].
+  Set<String> topicsLinkedTo(Iterable<String> selectedTopics) {
+    final selected = canonicalizeTopics(selectedTopics).toSet();
+    if (selected.isEmpty) return const <String>{};
+    final linked = <String>{};
+    for (final talk in talks) {
+      if (talk.isLogistics) continue;
+      final talkTopics = _effectiveTalkTopics[talk.id] ?? const <String>[];
+      if (!talkTopics.any(selected.contains)) continue;
+      for (final t in talkTopics) {
+        if (!selected.contains(t)) {
+          linked.add(t);
+        }
+      }
+    }
+    return Set.unmodifiable(linked);
+  }
+
+  /// Recommended schedule topics for bubble selection: selected topics first,
+  /// then strongly co-occurring linked topics, then popular conference topics.
+  List<String> recommendedBubbleTopics({
+    required Iterable<String> selectedTopics,
+  }) {
+    if (topicVocabulary.isEmpty) return const [];
+    final selected = canonicalizeTopics(selectedTopics);
+    final selectedSet = selected.toSet();
+    final cap = math.min(
+      topicVocabulary.length,
+      math.max(18, selected.length + 6),
+    );
+
+    if (selectedSet.isEmpty) {
+      return popularTopics(limit: cap);
+    }
+
+    final coCounts = <String, int>{};
+    for (final talk in talks) {
+      if (talk.isLogistics) continue;
+      final talkTopics = _effectiveTalkTopics[talk.id] ?? const <String>[];
+      final overlapCount = talkTopics.where(selectedSet.contains).length;
+      if (overlapCount == 0) continue;
+      for (final t in talkTopics) {
+        if (selectedSet.contains(t)) continue;
+        coCounts[t] = (coCounts[t] ?? 0) + overlapCount;
+      }
+    }
+
+    final sortedLinked = coCounts.keys.toList()
+      ..sort((a, b) {
+        final byCo = (coCounts[b] ?? 0).compareTo(coCounts[a] ?? 0);
+        if (byCo != 0) return byCo;
+        final bySessions = (_topicSessionCounts[b] ?? 0).compareTo(
+          _topicSessionCounts[a] ?? 0,
+        );
+        if (bySessions != 0) return bySessions;
+        return a.toLowerCase().compareTo(b.toLowerCase());
+      });
+
+    final ordered = <String>{
+      ...selected,
+      ...sortedLinked,
+      ...popularTopics(limit: topicVocabulary.length),
+    };
+    return List.unmodifiable(ordered.take(cap));
+  }
+
+  /// Builds the home-screen [ScopeGraphData] for `WavelengthScope`:
+  /// - Up to [maxTopics] (`9`) topics with `ring == 0` capped at `<= 4` direct
+  ///   topics (`S3`).
+  /// - Cold start (`directTopics` and `goingTopics` empty): `0` on `ring: 0`,
+  ///   top `4` popular on `ring: 1`, and next `5` on `ring: 2`.
+  /// - One best non-logistics [ScheduleTalk] per shown topic (preferring
+  ///   [goingTalkIds], avoiding duplicate talk IDs across topics).
+  /// - Up to `15` strongest edges among shown topics.
+  /// - Words-only `why` strings (zero `%`, zero `"nearby"`, zero `"conversation"`).
+  ScopeGraphData buildScopeGraph({
+    required Set<String> selectedTopics,
+    required List<List<String>> noteTopicLists,
+    required Set<String> goingTalkIds,
+    Map<String, int> liveTopicCounts = const {},
+    Map<String, int> livePeopleByTopic = const {},
+    List<({String source, String target, int weight})>? liveEdges,
+    int maxTopics = 9,
+  }) {
+    if (maxTopics <= 0 || topicVocabulary.isEmpty) {
+      return const ScopeGraphData(topics: [], talks: [], edges: []);
+    }
+
+    final selectedList = canonicalizeTopics(selectedTopics);
+    final selectedSet = selectedList.toSet();
+    final selectedOrder = <String, int>{
+      for (var i = 0; i < selectedList.length; i++) selectedList[i]: i,
+    };
+    final noteTopicCounts = <String, int>{};
+    final noteTopicOrder = <String, int>{};
+    var orderCursor = 0;
+    for (final list in noteTopicLists.reversed) {
+      for (final topic in canonicalizeTopics(list)) {
+        noteTopicCounts[topic] = (noteTopicCounts[topic] ?? 0) + 1;
+        noteTopicOrder.putIfAbsent(topic, () => orderCursor++);
+      }
+    }
+
+    final goingSet = <String>{
+      for (final id in goingTalkIds)
+        if (_talksById[id] != null && !_talksById[id]!.isLogistics) id,
+    };
+    final goingTopicCounts = <String, int>{};
+    for (final id in goingSet) {
+      for (final t in (_effectiveTalkTopics[id] ?? const <String>[])) {
+        goingTopicCounts[t] = (goingTopicCounts[t] ?? 0) + 1;
+      }
+    }
+    final goingTopics = goingTopicCounts.keys.toSet();
+
+    final normalizedLiveCounts = <String, int>{};
+    for (final entry in liveTopicCounts.entries) {
+      final canonical = _canonicalByLower[_normalizeWhitespace(entry.key)];
+      if (canonical != null && entry.value >= 0) {
+        normalizedLiveCounts[canonical] = entry.value;
+      }
+    }
+
+    final normalizedLivePeople = <String, int>{};
+    for (final entry in livePeopleByTopic.entries) {
+      final canonical = _canonicalByLower[_normalizeWhitespace(entry.key)];
+      if (canonical != null && entry.value > 0) {
+        normalizedLivePeople[canonical] = entry.value;
+      }
+    }
+
+    int effectiveCount(String topic) =>
+        normalizedLiveCounts[topic] ?? (_topicSessionCounts[topic] ?? 0);
+
+    List<String> rankedPopularAll() {
+      final list = [...topicVocabulary]..sort((a, b) {
+        final byLiveOrLocal = effectiveCount(b).compareTo(effectiveCount(a));
+        if (byLiveOrLocal != 0) return byLiveOrLocal;
+        final byLocal = (_topicSessionCounts[b] ?? 0).compareTo(
+          _topicSessionCounts[a] ?? 0,
+        );
+        if (byLocal != 0) return byLocal;
+        return a.toLowerCase().compareTo(b.toLowerCase());
+      });
+      return list;
+    }
+
+    final targetCount = math.min(maxTopics, topicVocabulary.length);
+    final directTopics = <String>{...noteTopicCounts.keys, ...selectedSet};
+
+    final chosenTopicSpecs = <({String topic, int ring, String why})>[];
+
+    if (directTopics.isEmpty && goingTopics.isEmpty) {
+      // Cold start: 0 on ring 0, top 4 popular on ring 1, next 5 on ring 2.
+      final popular = rankedPopularAll();
+      for (var i = 0; i < targetCount && i < popular.length; i++) {
+        final topic = popular[i];
+        final sessions = math.max(1, effectiveCount(topic));
+        final sessionWord = sessions == 1 ? 'session' : 'sessions';
+        chosenTopicSpecs.add((
+          topic: topic,
+          ring: i < 4 ? 1 : 2,
+          why: 'Active across $sessions KubeCon $sessionWord',
+        ));
+      }
+    } else {
+      final seedTopics = <String>{...directTopics, ...goingTopics};
+      final coOccurringBridge = <String, Set<String>>{};
+      final coOccurringCounts = <String, int>{};
+
+      for (final talk in talks) {
+        if (talk.isLogistics) continue;
+        final talkTopics = _effectiveTalkTopics[talk.id] ?? const <String>[];
+        final sharedSeeds = [
+          for (final t in talkTopics)
+            if (seedTopics.contains(t)) t,
+        ];
+        if (sharedSeeds.isEmpty) continue;
+        for (final t in talkTopics) {
+          if (seedTopics.contains(t)) continue;
+          coOccurringCounts[t] = (coOccurringCounts[t] ?? 0) + 1;
+          (coOccurringBridge[t] ??= <String>{}).addAll(sharedSeeds);
+        }
+      }
+
+      if (liveEdges != null) {
+        for (final e in liveEdges) {
+          final a = _canonicalByLower[_normalizeWhitespace(e.source)];
+          final b = _canonicalByLower[_normalizeWhitespace(e.target)];
+          if (a == null || b == null || a == b || e.weight <= 0) continue;
+          if (seedTopics.contains(a) && !seedTopics.contains(b)) {
+            coOccurringCounts[b] = (coOccurringCounts[b] ?? 0) + e.weight;
+            (coOccurringBridge[b] ??= <String>{}).add(a);
+          } else if (seedTopics.contains(b) && !seedTopics.contains(a)) {
+            coOccurringCounts[a] = (coOccurringCounts[a] ?? 0) + e.weight;
+            (coOccurringBridge[a] ??= <String>{}).add(b);
+          }
+        }
+      }
+
+      final sortedDirect = directTopics.toList()
+        ..sort((a, b) {
+          int directScore(String t) {
+            final notes = noteTopicCounts[t] ?? 0;
+            final selected = selectedSet.contains(t);
+            final going = goingTopicCounts[t] ?? 0;
+            final people = normalizedLivePeople[t] ?? 0;
+            return (notes > 0 ? 10 + (notes - 1) * 3 : 0) +
+                (selected ? 8 : 0) +
+                (going > 0 ? 3 : 0) +
+                (people > 0 ? 2 : 0);
+          }
+
+          final byScore = directScore(b).compareTo(directScore(a));
+          if (byScore != 0) return byScore;
+          final rankA = noteTopicOrder[a] ?? 9999;
+          final rankB = noteTopicOrder[b] ?? 9999;
+          if (rankA != rankB) return rankA.compareTo(rankB);
+          final selA = selectedOrder[a] ?? 9999;
+          final selB = selectedOrder[b] ?? 9999;
+          if (selA != selB) return selA.compareTo(selB);
+          final byCount = effectiveCount(b).compareTo(effectiveCount(a));
+          if (byCount != 0) return byCount;
+          return a.toLowerCase().compareTo(b.toLowerCase());
+        });
+
+      final sortedGoingOnly = [
+        for (final t in goingTopics)
+          if (!directTopics.contains(t)) t,
+      ]..sort((a, b) {
+        final byGoing = (goingTopicCounts[b] ?? 0).compareTo(
+          goingTopicCounts[a] ?? 0,
+        );
+        if (byGoing != 0) return byGoing;
+        final byCount = effectiveCount(b).compareTo(effectiveCount(a));
+        if (byCount != 0) return byCount;
+        return a.toLowerCase().compareTo(b.toLowerCase());
+      });
+
+      final sortedBridge = coOccurringCounts.keys.toList()
+        ..sort((a, b) {
+          final byCo = (coOccurringCounts[b] ?? 0).compareTo(
+            coOccurringCounts[a] ?? 0,
+          );
+          if (byCo != 0) return byCo;
+          final byPeople = (normalizedLivePeople[b] ?? 0).compareTo(
+            normalizedLivePeople[a] ?? 0,
+          );
+          if (byPeople != 0) return byPeople;
+          final byCount = effectiveCount(b).compareTo(effectiveCount(a));
+          if (byCount != 0) return byCount;
+          return a.toLowerCase().compareTo(b.toLowerCase());
+        });
+
+      String topicWhy(String topic) {
+        final noteHits = noteTopicCounts[topic] ?? 0;
+        final isSelected = selectedSet.contains(topic);
+        final isFromGoing = goingTopics.contains(topic);
+        if (noteHits > 0 && isSelected) {
+          return 'Matches your notes and your interest in $topic';
+        }
+        if (noteHits > 0) {
+          return 'From your notes on $topic';
+        }
+        if (isSelected) {
+          return 'Matches your interest in $topic';
+        }
+        if (isFromGoing) {
+          return 'Featured in a session on your schedule';
+        }
+        final bridges = (coOccurringBridge[topic] ?? const <String>{})
+            .take(2)
+            .toList(growable: false);
+        if (bridges.isNotEmpty) {
+          return 'Connected to sessions on ${_joinHumanList(bridges)}';
+        }
+        final sessions = math.max(1, effectiveCount(topic));
+        final sessionWord = sessions == 1 ? 'session' : 'sessions';
+        return 'Active across $sessions KubeCon $sessionWord';
+      }
+
+      final seen = <String>{};
+      var ring0Count = 0;
+      var ring1Count = 0;
+
+      // Direct topics: cap ring 0 at <= 4; overflow direct topics go to ring 1.
+      for (final topic in sortedDirect) {
+        if (chosenTopicSpecs.length >= targetCount) break;
+        if (!seen.add(topic)) continue;
+        final ring = ring0Count < 4 ? 0 : 1;
+        if (ring == 0) {
+          ring0Count++;
+        } else {
+          ring1Count++;
+        }
+        chosenTopicSpecs.add((topic: topic, ring: ring, why: topicWhy(topic)));
+      }
+
+      // Topics from "I'm going" talks sit on ring 1 (up to 4) then ring 2.
+      for (final topic in sortedGoingOnly) {
+        if (chosenTopicSpecs.length >= targetCount) break;
+        if (!seen.add(topic)) continue;
+        final ring = ring1Count < 4 ? 1 : 2;
+        if (ring == 1) ring1Count++;
+        chosenTopicSpecs.add((topic: topic, ring: ring, why: topicWhy(topic)));
+      }
+
+      // Co-occurring bridge topics fill ring 1 (up to 3 if needed) then ring 2.
+      for (final topic in sortedBridge) {
+        if (chosenTopicSpecs.length >= targetCount) break;
+        if (!seen.add(topic)) continue;
+        final ring = ring1Count < 3 ? 1 : 2;
+        if (ring == 1) ring1Count++;
+        chosenTopicSpecs.add((topic: topic, ring: ring, why: topicWhy(topic)));
+      }
+
+      // Popular backfill on ring 2 if fewer than targetCount topics matched.
+      if (chosenTopicSpecs.length < targetCount) {
+        for (final topic in rankedPopularAll()) {
+          if (chosenTopicSpecs.length >= targetCount) break;
+          if (!seen.add(topic)) continue;
+          chosenTopicSpecs.add((
+            topic: topic,
+            ring: 2,
+            why: topicWhy(topic),
+          ));
+        }
+      }
+    }
+
+    final shownSet = <String>{for (final s in chosenTopicSpecs) s.topic};
+
+    // Build up to 15 strongest edges among shown topics.
+    final mergedEdgeWeights = <(String, String), int>{};
+    for (final localEdge in coOccurringEdgesForTopics(
+      shownSet,
+      maxEdges: shownSet.length * shownSet.length,
+    )) {
+      mergedEdgeWeights[(localEdge.source, localEdge.target)] =
+          localEdge.weight;
+    }
+    if (liveEdges != null) {
+      for (final e in liveEdges) {
+        final rawA = _canonicalByLower[_normalizeWhitespace(e.source)];
+        final rawB = _canonicalByLower[_normalizeWhitespace(e.target)];
+        if (rawA == null ||
+            rawB == null ||
+            rawA == rawB ||
+            e.weight <= 0 ||
+            !shownSet.contains(rawA) ||
+            !shownSet.contains(rawB)) {
+          continue;
+        }
+        final pair = rawA.compareTo(rawB) < 0 ? (rawA, rawB) : (rawB, rawA);
+        final prev = mergedEdgeWeights[pair] ?? 0;
+        if (e.weight > prev) {
+          mergedEdgeWeights[pair] = e.weight;
+        }
+      }
+    }
+
+    final sortedEdges = mergedEdgeWeights.entries.toList()
+      ..sort((a, b) {
+        final byWeight = b.value.compareTo(a.value);
+        if (byWeight != 0) return byWeight;
+        final bySource = a.key.$1.toLowerCase().compareTo(
+          b.key.$1.toLowerCase(),
+        );
+        if (bySource != 0) return bySource;
+        return a.key.$2.toLowerCase().compareTo(b.key.$2.toLowerCase());
+      });
+
+    final scopeEdges = List<({String source, String target, int weight})>.unmodifiable([
+      for (final entry in sortedEdges.take(15))
+        (source: entry.key.$1, target: entry.key.$2, weight: entry.value),
+    ]);
+
+    // Select at most one best non-logistics ScheduleTalk per shown topic,
+    // preferring goingTalkIds and avoiding duplicate talk IDs across topics.
+    final usedTalkIds = <String>{};
+    final scopeTopics = <ScopeTopicEntry>[];
+    final scopeTalks = <ScopeTalkEntry>[];
+
+    for (final spec in chosenTopicSpecs) {
+      final topic = spec.topic;
+      final candidates = <ScheduleTalk>[];
+      for (final talk in talks) {
+        if (talk.isLogistics || usedTalkIds.contains(talk.id)) continue;
+        final talkTopics = _effectiveTalkTopics[talk.id] ?? const <String>[];
+        if (talkTopics.contains(topic)) {
+          candidates.add(talk);
+        }
+      }
+      if (candidates.isEmpty) {
+        for (final talk in talks) {
+          if (talk.isLogistics || usedTalkIds.contains(talk.id)) continue;
+          final absTopics = _abstractTopicsById[talk.id] ?? const <String>[];
+          if (absTopics.contains(topic)) {
+            candidates.add(talk);
+          }
+        }
+      }
+
+      ScheduleTalk? bestTalk;
+      if (candidates.isNotEmpty) {
+        int talkScore(ScheduleTalk t) {
+          final isGoing = goingSet.contains(t.id);
+          final tTopics = _effectiveTalkTopics[t.id] ?? const <String>[];
+          var noteOverlap = 0;
+          var selectedOverlap = 0;
+          var shownOverlap = 0;
+          for (final tag in tTopics) {
+            if ((noteTopicCounts[tag] ?? 0) > 0) noteOverlap++;
+            if (selectedSet.contains(tag)) selectedOverlap++;
+            if (shownSet.contains(tag)) shownOverlap++;
+          }
+          return (isGoing ? 100 : 0) +
+              noteOverlap * 5 +
+              selectedOverlap * 4 +
+              shownOverlap;
+        }
+
+        candidates.sort((a, b) {
+          final byScore = talkScore(b).compareTo(talkScore(a));
+          if (byScore != 0) return byScore;
+          final byStart = a.start.compareTo(b.start);
+          if (byStart != 0) return byStart;
+          return a.id.compareTo(b.id);
+        });
+        bestTalk = candidates.first;
+        usedTalkIds.add(bestTalk.id);
+      }
+
+      final relatedAll = _relatedTopicsForTopic(topic);
+      final linkedForTopic = <String>{
+        for (final r in relatedAll)
+          if (shownSet.contains(r)) r,
+        ...relatedAll.take(4),
+      }.take(5).toList(growable: false);
+
+      scopeTopics.add(
+        ScopeTopicEntry(
+          id: topic,
+          label: topic,
+          count: math.max(1, effectiveCount(topic)),
+          ring: spec.ring,
+          people: normalizedLivePeople[topic] ?? 0,
+          why: spec.why,
+          linkedTopics: List.unmodifiable(linkedForTopic),
+          featuredTalk: bestTalk,
+        ),
+      );
+
+      if (bestTalk != null) {
+        final isGoing = goingSet.contains(bestTalk.id);
+        final talkTopics =
+            _effectiveTalkTopics[bestTalk.id] ?? const <String>[];
+        final matchedNote = [
+          for (final t in talkTopics)
+            if ((noteTopicCounts[t] ?? 0) > 0) t,
+        ];
+        final matchedSel = [
+          for (final t in talkTopics)
+            if (selectedSet.contains(t)) t,
+        ];
+        final matchedDirect = <String>{...matchedNote, ...matchedSel};
+
+        final String talkWhy;
+        if (isGoing && matchedDirect.isNotEmpty) {
+          talkWhy =
+              'On your schedule and matches your interest in ${_joinHumanList(matchedDirect.take(3).toList())}';
+        } else if (isGoing) {
+          talkWhy = 'Saved to your schedule';
+        } else if (matchedNote.isNotEmpty &&
+            matchedSel.any((t) => !matchedNote.contains(t))) {
+          talkWhy =
+              'Matches your notes and interests in ${_joinHumanList(matchedDirect.take(3).toList())}';
+        } else if (matchedNote.isNotEmpty) {
+          talkWhy =
+              'Matches your notes on ${_joinHumanList(matchedNote.take(3).toList())}';
+        } else if (matchedSel.isNotEmpty) {
+          talkWhy =
+              'Matches your interest in ${_joinHumanList(matchedSel.take(3).toList())}';
+        } else {
+          final exploreList = talkTopics.isNotEmpty ? talkTopics : [topic];
+          talkWhy =
+              'KubeCon session exploring ${_joinHumanList(exploreList.take(2).toList())}';
+        }
+
+        final talkLinked = <String>{topic, ...talkTopics};
+        scopeTalks.add(
+          ScopeTalkEntry(
+            id: 'talk:${bestTalk.id}',
+            topicId: topic,
+            talk: bestTalk,
+            going: isGoing,
+            why: talkWhy,
+            linkedTopics: List.unmodifiable(talkLinked.take(5)),
+          ),
+        );
+      }
+    }
+
+    return ScopeGraphData(
+      topics: List.unmodifiable(scopeTopics),
+      talks: List.unmodifiable(scopeTalks),
+      edges: scopeEdges,
+    );
   }
 
   /// Ranks Topic Spaces (`topic:<tag>`) and Talk Spaces (`talk:<id>`) into
@@ -610,10 +1232,7 @@ class ScheduleCatalog {
             closeness: ring,
             why: why,
             recentTopics: List.unmodifiable([topic, ...related.take(3)]),
-            peopleCount: _estimateTopicPeopleCount(
-              topic,
-              personalSignal: noteHits + (isSelected ? 1 : 0),
-            ),
+            peopleCount: 0,
           ),
         ),
       );
@@ -638,15 +1257,16 @@ class ScheduleCatalog {
         ...matchedSelectedTopics,
       };
 
-      // Check abstract matches only when direct topics are active so talks whose
-      // tags are format-only still surface in the outer/middle ring.
+      // Precomputed abstract topics avoid re-scanning 600 abstracts per call.
       var abstractMatches = const <String>[];
-      if (matchedDirect.isEmpty && directTopics.isNotEmpty && talk.abstractText.isNotEmpty) {
-        final inAbstract = extractMatchedTopics(talk.abstractText);
-        abstractMatches = [
-          for (final t in inAbstract)
-            if (directTopics.contains(t)) t,
-        ];
+      if (matchedDirect.isEmpty && directTopics.isNotEmpty) {
+        final inAbstract = _abstractTopicsById[talk.id] ?? const <String>[];
+        if (inAbstract.isNotEmpty) {
+          abstractMatches = [
+            for (final t in inAbstract)
+              if (directTopics.contains(t)) t,
+          ];
+        }
       }
 
       final matchedGoingTopics = [
@@ -724,11 +1344,7 @@ class ScheduleCatalog {
             closeness: ring,
             why: why,
             recentTopics: List.unmodifiable(recent.take(4)),
-            peopleCount: _estimateTalkPeopleCount(
-              talk,
-              topicCount: talkTopics.length,
-              isGoing: isGoing,
-            ),
+            peopleCount: 0,
             talk: talk,
             isGoing: isGoing,
           ),
@@ -781,7 +1397,7 @@ class ScheduleCatalog {
             topic,
             ..._relatedTopicsForTopic(topic).take(2),
           ]),
-          peopleCount: _estimateTopicPeopleCount(topic, personalSignal: 0),
+          peopleCount: 0,
         ),
       );
     }
@@ -802,11 +1418,7 @@ class ScheduleCatalog {
           closeness: ClosenessRing.outer,
           why: 'KubeCon session exploring ${_joinHumanList(topics.take(2).toList())}',
           recentTopics: List.unmodifiable(topics.take(4)),
-          peopleCount: _estimateTalkPeopleCount(
-            talk,
-            topicCount: topics.length,
-            isGoing: false,
-          ),
+          peopleCount: 0,
           talk: talk,
         ),
       );
@@ -817,6 +1429,7 @@ class ScheduleCatalog {
   List<String> _relatedTopicsForTopic(String topic) {
     final counts = <String, int>{};
     for (final talk in talks) {
+      if (talk.isLogistics) continue;
       final topics = _effectiveTalkTopics[talk.id] ?? const [];
       if (!topics.contains(topic)) continue;
       for (final other in topics) {
@@ -831,20 +1444,6 @@ class ScheduleCatalog {
         return a.toLowerCase().compareTo(b.toLowerCase());
       });
     return sorted;
-  }
-
-  int _estimateTopicPeopleCount(String topic, {required int personalSignal}) {
-    final sessions = _topicSessionCounts[topic] ?? 1;
-    return (3 + sessions * 2 + personalSignal).clamp(2, 64);
-  }
-
-  int _estimateTalkPeopleCount(
-    ScheduleTalk talk, {
-    required int topicCount,
-    required bool isGoing,
-  }) {
-    final hashSeed = talk.id.codeUnits.fold<int>(0, (sum, c) => (sum + c) % 11);
-    return 4 + hashSeed + topicCount * 2 + (isGoing ? 1 : 0);
   }
 
   static int _compareScoredSpaces(_ScoredSpace a, _ScoredSpace b) {
