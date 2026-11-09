@@ -6,10 +6,12 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart' show immutable;
 import 'package:http/http.dart' as http;
 
+import 'attendee_api.dart';
 import 'phone_profile_store.dart';
 import 'schedule_data.dart';
+import 'transcript_sync.dart';
 
-/// Matched note returned by search.
+/// Matched note returned by legacy `/querysession` search.
 ///
 /// Enforces at both JSON-parsing and constructor level that [sharedText] is
 /// `null` unless [shared] is `true` or [conference] is [demoConference].
@@ -189,8 +191,38 @@ class ConversationApi {
   void close() => _client.close();
 }
 
+/// Dedicated `GET /search` moment hit model.
+///
+/// Enforces at construction that [sharedText] is populated **ONLY** when
+/// [shared] is `true`, capped at 280 runes, with zero `__setup_smoke__`
+/// exemption.
+@immutable
+class SearchMomentHit {
+  SearchMomentHit({
+    required this.id,
+    Iterable<String> topics = const [],
+    required this.why,
+    this.shared = false,
+    String? sharedText,
+  }) : topics = List.unmodifiable(topics),
+       sharedText = shared && sharedText != null
+           ? _nullIfEmpty(_collapseSingleLine(sharedText, maxRunes: 280))
+           : null;
+
+  final String id;
+  final List<String> topics;
+  final String why;
+  final bool shared;
+  final String? sharedText;
+
+  @override
+  String toString() =>
+      'SearchMomentHit(id: $id, topics: $topics, shared: $shared)';
+}
+
 /// One-shot finished note submission DTO supporting both the `store.mjs`
-/// adapter contract and the Attendee API (`PUT /me` + opt-in `POST /moments`).
+/// adapter contract and the Attendee API (`TranscriptSync` + `PUT /me` +
+/// opt-in `POST /moments`).
 @immutable
 class NoteSubmission {
   NoteSubmission({
@@ -345,7 +377,7 @@ class NoteSubmission {
   /// Returns `null` whenever [shared] is `false` so unshared raw note text is
   /// never published to the public `moments` index, or when fewer than 1
   /// schedule topic is available.
-  Map<String, Object?>? toMomentPayload({
+  Map<String, dynamic>? toMomentPayload({
     required Iterable<String> effectiveTopics,
   }) {
     if (!shared) return null;
@@ -356,7 +388,7 @@ class NoteSubmission {
     if (momentTopics.isEmpty) return null;
     final gist = _collapseSingleLine(transcript, maxRunes: 280);
     if (gist.isEmpty) return null;
-    return {
+    return <String, dynamic>{
       'conference': conference,
       'gist': gist,
       'topics': momentTopics,
@@ -380,15 +412,20 @@ class NoteReceipt {
     required this.revision,
     required this.matchedTopics,
     required this.isLocalFallback,
+    this.transcriptSavedRemotely = false,
     required this.statusLabel,
     this.momentId,
   });
+
+  static const String savedRemotelyLabel = 'Saved to your wavelength.';
+  static const String savedLocallyLabel = 'Saved on this phone. Not sent.';
 
   final String documentId;
   final String conversationId;
   final int revision;
   final List<String> matchedTopics;
   final bool isLocalFallback;
+  final bool transcriptSavedRemotely;
   final String statusLabel;
 
   /// Populated only when [NoteSubmission.shared] was `true` and `POST /moments`
@@ -499,52 +536,61 @@ class PublicSearchResult {
   /// Matching sessions with speaker names stripped.
   final List<ScheduleTalk> talks;
 
-  /// Matching attendee moments/notes with unshared text stripped.
-  final List<Conversation> moments;
+  /// Matching attendee moments with unshared text stripped (`shared == true` only).
+  final List<SearchMomentHit> moments;
 }
 
 @immutable
-class FeedAlert {
-  const FeedAlert({
+class SharedNoteMatch {
+  SharedNoteMatch({
     required this.id,
-    this.kind,
-    this.room,
-    this.why,
-    this.seen = false,
-    this.at,
-  });
+    required String excerpt,
+    Iterable<String> topics = const [],
+  }) : excerpt = _collapseSingleLine(excerpt, maxRunes: 280),
+       topics = List.unmodifiable(_normalizeSubmissionTopics(topics));
 
   final String id;
-  final String? kind;
-  final String? room;
-  final String? why;
-  final bool seen;
-  final String? at;
 
-  factory FeedAlert.fromJson(Object? json) {
-    if (json case {'id': final String id} when id.trim().isNotEmpty) {
-      final rawKind = json['kind'];
-      final rawRoom = json['room'];
-      final rawWhy = json['why'];
-      final rawSeen = json['seen'];
-      final rawAt = json['at'];
-      return FeedAlert(
-        id: id.trim(),
-        kind: rawKind is String ? rawKind : null,
-        room: rawRoom is String ? rawRoom : null,
-        why: rawWhy is String ? rawWhy : null,
-        seen: rawSeen == true,
-        at: rawAt is String
-            ? rawAt
-            : (rawAt is int ? rawAt.toString() : null),
-      );
-    }
-    throw const FormatException('Invalid feed alert');
-  }
+  /// Excerpt from a note its author explicitly chose to share, capped at 280
+  /// characters. Score, similarity, and author handle are never exposed.
+  final String excerpt;
+  final List<String> topics;
 }
 
-/// Single backend seam through which the ConFellow Flutter app communicates
-/// with the backend (or its labeled local fallback).
+@immutable
+class MatchesLookupResult {
+  const MatchesLookupResult({
+    this.matches = const <SharedNoteMatch>[],
+    this.needsInput = false,
+  });
+
+  final List<SharedNoteMatch> matches;
+  final bool needsInput;
+}
+
+@immutable
+class WavelengthRefreshResult {
+  const WavelengthRefreshResult({
+    required this.liveSuccess,
+    this.liveTopicCounts = const {},
+    this.livePeopleByTopic = const {},
+    this.liveEdges = const [],
+    this.recommendedTopicOrder = const [],
+    this.basedOnSummary,
+    this.fallbackMessage,
+  });
+
+  final bool liveSuccess;
+  final Map<String, int> liveTopicCounts;
+  final Map<String, int> livePeopleByTopic;
+  final List<({String source, String target, int weight})> liveEdges;
+  final List<String> recommendedTopicOrder;
+  final String? basedOnSummary;
+  final String? fallbackMessage;
+}
+
+/// Slim backend seam through which the ConFellow Flutter app communicates
+/// with the Attendee API (or its labeled local schedule fallback).
 abstract interface class WavelengthBackend {
   /// True when operating purely against the labeled fake / local schedule.
   bool get isFake;
@@ -566,53 +612,43 @@ abstract interface class WavelengthBackend {
 
   Future<NoteReceipt> submitNote(NoteSubmission submission);
 
-  Future<List<Conversation>> searchNotes(String interests);
-
   Future<PublicSearchResult> searchContent(String query, {int limit = 20});
 
   Future<TopicGraph> fetchGraph({int limit = 50});
 
-  Future<List<FeedAlert>> fetchFeed({int limit = 20});
+  Future<WavelengthRefreshResult> refreshRecommendations({
+    String? typedInterests,
+  });
 
-  Future<List<WavelengthSpace>> findWavelength({
-    required Set<String> activeTopics,
-    List<String> noteTexts = const [],
-    Set<String> goingTalkIds = const {},
+  Future<MatchesLookupResult> findSharedNoteMatches({
+    String? queryText,
+    int limit = 10,
   });
 
   void close();
 }
 
-/// Production Attendee API client (`PUT /me`, `POST /moments`, `GET /search`,
-/// `GET /graph`, `GET /feed`) with automatic, error-free fallback to the
-/// bundled 600-session KubeCon [ScheduleCatalog] whenever endpoints return
-/// `404`/`503` or the device is offline.
+/// Production Attendee API backend reusing [TranscriptSync] + [AttendeeApi] for
+/// secure token storage (`FlutterSecureStorage`), durable transcript segment
+/// uploads (`PUT /transcripts/{stream}/segments/{seq}`), profile updates
+/// (`PUT /me`), opt-in shared moments (`POST /moments`), graph (`GET /graph`),
+/// and hybrid search (`GET /search`), with clean fallback to [ScheduleCatalog].
 class AttendeeWavelengthBackend implements WavelengthBackend {
   AttendeeWavelengthBackend({
     required this.profileStore,
+    required this.sync,
     this.catalog,
-    http.Client? client,
-    Uri? baseUrl,
-    this.timeout = const Duration(seconds: 15),
-    this.queryLegacySmokeEndpointOnFallback = false,
+    this.ownsSync = false,
     DateTime Function()? clock,
-  }) : _client = client ?? http.Client(),
-       _baseUrl =
-           baseUrl ??
-           Uri.parse(
-             const String.fromEnvironment(
-               'API_BASE_URL',
-               defaultValue: 'https://grindset.cnh.radarhq.io',
-             ),
-           ),
-       _clock = clock ?? DateTime.now;
+  }) : _clock = clock ?? DateTime.now;
+
+  static const String unreachableFallbackMessage =
+      'Could not reach ConFellow. Showing the schedule on this phone.';
 
   final PhoneProfileStore profileStore;
+  final TranscriptSync sync;
   final ScheduleCatalog? catalog;
-  final http.Client _client;
-  final Uri _baseUrl;
-  final Duration timeout;
-  final bool queryLegacySmokeEndpointOnFallback;
+  final bool ownsSync;
   final DateTime Function() _clock;
 
   bool _usingLocalFallback = false;
@@ -624,122 +660,141 @@ class AttendeeWavelengthBackend implements WavelengthBackend {
   bool get isUsingLocalFallback => _usingLocalFallback;
 
   @override
-  bool get roomsAvailable => false;
+  bool get roomsAvailable => true;
 
   @override
   String get statusLabel => _usingLocalFallback
       ? 'Local KubeCon schedule active · live attendee sync will resume automatically'
       : 'Connected to ConFellow conference wavelength';
 
+  Future<(PhoneProfile profile, bool created)> _ensureConnected(
+    PhoneProfile profile,
+  ) async {
+    var current = profile;
+    var created = false;
+    if (!sync.loaded) {
+      await sync.initialize();
+    }
+    if (!sync.connected) {
+      final initialInterests = current.buildProfileInterests();
+      final initialTopics = current.combinedProfileTopics;
+      final initialStarred = current.goingTalkIds.take(100).toList(
+        growable: false,
+      );
+      final initialName = current.displayName.isEmpty
+          ? null
+          : current.displayName;
+      try {
+        await sync.connect(
+          current.handle,
+          current.conference,
+          displayName: initialName,
+          interests: initialInterests,
+          topics: initialTopics,
+          starredTalks: initialStarred,
+        );
+        created = sync.connected;
+      } on AttendeeApiException catch (e) {
+        if (e.status == 409) {
+          current = await profileStore.rotateHandle(
+            conference: current.conference,
+          );
+          try {
+            await sync.connect(
+              current.handle,
+              current.conference,
+              displayName: current.displayName.isEmpty
+                  ? null
+                  : current.displayName,
+              interests: current.buildProfileInterests(),
+              topics: current.combinedProfileTopics,
+              starredTalks: current.goingTalkIds.take(100).toList(
+                growable: false,
+              ),
+            );
+            created = sync.connected;
+          } on AttendeeApiException {
+            // Offline, 503, or repeated collision: degrade cleanly without throwing.
+          }
+        }
+      }
+    }
+    return (current, created);
+  }
+
   @override
   Future<ProfileSyncResult> syncProfile(
     PhoneProfile profile, {
     String? interestsOverride,
   }) async {
-    if (!_isValidHttpsBaseUrl(_baseUrl) ||
-        !PhoneProfile.handlePattern.hasMatch(profile.handle)) {
+    final (current, createdOnConnect) = await _ensureConnected(profile);
+    if (!sync.connected ||
+        sync.token == null ||
+        sync.handle == null ||
+        sync.conference == null) {
       _usingLocalFallback = true;
       return ProfileSyncResult(
-        profile: profile,
+        profile: current,
         syncedRemotely: false,
         created: false,
       );
     }
 
-    var current = profile;
+    final resolvedInterests = interestsOverride != null
+        ? _collapseSingleLine(interestsOverride, maxRunes: 1000)
+        : current.buildProfileInterests();
+    final topics = current.combinedProfileTopics;
+    final starredTalks = current.goingTalkIds.take(100).toList(growable: false);
+    final candidateDisplayName = current.displayName.isEmpty
+        ? null
+        : current.displayName;
+
     for (var attempt = 0; attempt < 2; attempt++) {
-      final hasToken =
-          current.attendeeToken != null && current.attendeeToken!.isNotEmpty;
-      final headers = <String, String>{
-        'Content-Type': 'application/json; charset=utf-8',
-        'Accept': 'application/json',
-        if (hasToken) 'Authorization': 'Bearer ${current.attendeeToken}',
-      };
-      final bodyMap = current.toPutMeBody();
-      if (interestsOverride != null && interestsOverride.isNotEmpty) {
-        bodyMap['interests'] = _collapseSingleLine(
-          interestsOverride,
-          maxRunes: 1000,
-        );
-      }
       try {
-        final response = await _client
-            .put(
-              _baseUrl.resolve('/me'),
-              headers: headers,
-              body: jsonEncode(bodyMap),
-            )
-            .timeout(timeout);
-
-        if (response.statusCode == 200 || response.statusCode == 201) {
-          final Object? decoded = jsonDecode(
-            utf8.decode(response.bodyBytes, allowMalformed: true),
+        Map<String, dynamic> response;
+        try {
+          response = await sync.api.updateProfile(
+            sync.handle!,
+            sync.conference!,
+            token: sync.token,
+            displayName: candidateDisplayName,
+            interests: resolvedInterests,
+            topics: topics,
+            starredTalks: starredTalks,
           );
-          if (decoded is! Map) {
-            throw const FormatException('Invalid PUT /me response');
-          }
-          final created =
-              decoded['created'] == true || response.statusCode == 201;
-          final rawToken = decoded['token'];
-          if (rawToken is String && rawToken.trim().isNotEmpty) {
-            current = await profileStore.saveAttendeeToken(
-              rawToken.trim(),
-              handle: current.handle,
-              conference: current.conference,
+        } on AttendeeApiException catch (e) {
+          // 016: If backend branch or Elastic mapping for `display_name` is not
+          // live yet (422 or 503), retry once without `display_name` while
+          // keeping the name saved on the phone for future syncs.
+          if (candidateDisplayName != null &&
+              (e.status == 422 || e.status == 503)) {
+            response = await sync.api.updateProfile(
+              sync.handle!,
+              sync.conference!,
+              token: sync.token,
+              interests: resolvedInterests,
+              topics: topics,
+              starredTalks: starredTalks,
             );
+          } else {
+            rethrow;
           }
-          _usingLocalFallback = false;
-          return ProfileSyncResult(
-            profile: current,
-            syncedRemotely: true,
-            created: created,
-          );
         }
-
-        // Handle collision when claiming without a token, or expired/mismatched
-        // profile token: rotate handle once and re-claim cleanly.
-        if (attempt == 0 &&
-            ((response.statusCode == 409 && !hasToken) ||
-                response.statusCode == 401 ||
-                response.statusCode == 403)) {
-          current = await profileStore.rotateHandle(
-            conference: current.conference,
-          );
-          continue;
-        }
-
-        // Concurrent seq_no conflict when updating with a valid token: retry once.
-        if (attempt == 0 && response.statusCode == 409 && hasToken) {
-          continue;
-        }
-
-        if (_isFallbackStatus(response.statusCode)) {
-          _usingLocalFallback = true;
-          return ProfileSyncResult(
-            profile: current,
-            syncedRemotely: false,
-            created: false,
-          );
-        }
-
-        throw const NoteSubmissionException(
-          'Could not update your conference profile right now.',
+        sync.rememberProfileFields(
+          interests: resolvedInterests,
+          topics: topics,
+          starredTalks: starredTalks,
         );
-      } on TimeoutException {
-        _usingLocalFallback = true;
+        _usingLocalFallback = false;
         return ProfileSyncResult(
           profile: current,
-          syncedRemotely: false,
-          created: false,
+          syncedRemotely: true,
+          created: createdOnConnect || response['created'] == true,
         );
-      } on http.ClientException {
-        _usingLocalFallback = true;
-        return ProfileSyncResult(
-          profile: current,
-          syncedRemotely: false,
-          created: false,
-        );
-      } on FormatException {
+      } on AttendeeApiException catch (e) {
+        if (attempt == 0 && e.status == 409) {
+          continue;
+        }
         _usingLocalFallback = true;
         return ProfileSyncResult(
           profile: current,
@@ -769,7 +824,7 @@ class AttendeeWavelengthBackend implements WavelengthBackend {
     );
     final whySummary = matchedTopics.isNotEmpty
         ? 'Tuned: ${matchedTopics.join(', ')}'
-        : 'Saved note';
+        : 'Note saved';
 
     final localSummary = LocalNoteSummary(
       conversationId: submission.conversationId,
@@ -781,89 +836,66 @@ class AttendeeWavelengthBackend implements WavelengthBackend {
       createdAt: nowUtc,
     );
 
-    final currentProfile = await profileStore.load();
-    final wireInterests = _evolveInterests(
-      existingInterests: currentProfile.buildProfileInterests(),
-      matchedTopics: matchedTopics,
-      transcript: submission.transcript,
-    );
-    final diskInterests = submission.shared
-        ? wireInterests
-        : _evolveInterests(
-            existingInterests: currentProfile.interests,
-            matchedTopics: matchedTopics,
-            transcript: '',
-          );
-    final updatedProfile = await profileStore.recordNote(
-      localSummary,
-      evolvedInterests: diskInterests,
-    );
+    // S1: Never store or transmit note transcript/sharedText inside `interests`.
+    var updatedProfile = await profileStore.recordNote(localSummary);
+    final (connectedProfile, _) = await _ensureConnected(updatedProfile);
+    updatedProfile = connectedProfile;
 
-    final syncResult = await syncProfile(
-      updatedProfile,
-      interestsOverride: wireInterests,
-    );
-    final activeProfile = syncResult.profile;
-
-    String? createdMomentId;
-    final token = activeProfile.attendeeToken;
-
-    // CRITICAL PRIVACY RULE: Only publish to `POST /moments` when the user
-    // explicitly opted into `shared: true` ("Share this note").
-    if (submission.shared &&
-        syncResult.syncedRemotely &&
-        token != null &&
-        token.isNotEmpty) {
-      final candidateMomentTopics = matchedTopics.isNotEmpty
-          ? matchedTopics
-          : activeProfile.selectedTopics;
-      final momentPayload = NoteSubmission(
-        conference: activeProfile.conference,
-        ownerId: activeProfile.handle,
-        conversationId: submission.conversationId,
-        transcript: submission.transcript,
-        expiresAt: submission.expiresAt,
-        topics: candidateMomentTopics,
-        shared: true,
-        source: submission.source,
-      ).toMomentPayload(effectiveTopics: candidateMomentTopics);
-
-      if (momentPayload != null) {
+    var transcriptSaved = false;
+    int? savedSequence;
+    if (sync.connected) {
+      if (!sync.enabled) await sync.setEnabled(true);
+      if (sync.canBegin) {
         try {
-          final response = await _client
-              .post(
-                _baseUrl.resolve('/moments'),
-                headers: {
-                  'Authorization': 'Bearer $token',
-                  'Content-Type': 'application/json',
-                  'Accept': 'application/json',
-                },
-                body: jsonEncode(momentPayload),
-              )
-              .timeout(timeout);
-          if (response.statusCode == 201) {
-            final Object? body = jsonDecode(utf8.decode(response.bodyBytes));
-            if (body case {'id': final String id} when id.isNotEmpty) {
-              createdMomentId = id;
-            }
-          } else if (_isFallbackStatus(response.statusCode)) {
-            _usingLocalFallback = true;
-          }
-        } on Exception {
-          _usingLocalFallback = true;
+          await sync.begin();
+          savedSequence = sync.lastSequence;
+          await sync.finish(submission.transcript);
+          await sync.flush();
+          transcriptSaved = !sync.hasPending && sync.error == null;
+        } on AttendeeApiException {
+          transcriptSaved = false;
         }
       }
     }
 
-    final isFallback = !syncResult.syncedRemotely || _usingLocalFallback;
+    final profileSync = await syncProfile(updatedProfile);
+    updatedProfile = profileSync.profile;
+
+    String? sharedSegmentRef;
+    if (submission.shared &&
+        transcriptSaved &&
+        sync.connected &&
+        sync.token != null &&
+        sync.stream != null &&
+        savedSequence != null) {
+      try {
+        final shareResp = await sync.api.setSegmentSharing(
+          sync.token!,
+          sync.stream!,
+          savedSequence,
+          shared: true,
+          participantsConsented: true,
+        );
+        if (shareResp['shared'] == true) {
+          sharedSegmentRef = '${sync.stream}:$savedSequence';
+        }
+      } on AttendeeApiException {
+        // Best-effort sharing toggle; private finalized segment stays intact.
+      }
+    }
+
+    _usingLocalFallback = !transcriptSaved;
     return NoteReceipt(
       documentId: submission.computeStoreDocumentId(),
       conversationId: submission.conversationId,
       revision: submission.revision,
       matchedTopics: matchedTopics,
-      isLocalFallback: isFallback,
-      statusLabel: whySummary,
-      momentId: createdMomentId,
+      isLocalFallback: !transcriptSaved,
+      transcriptSavedRemotely: transcriptSaved,
+      statusLabel: transcriptSaved
+          ? NoteReceipt.savedRemotelyLabel
+          : NoteReceipt.savedLocallyLabel,
+      momentId: sharedSegmentRef,
     );
   }
 
@@ -878,80 +910,57 @@ class AttendeeWavelengthBackend implements WavelengthBackend {
     }
     final safeLimit = limit.clamp(1, 50);
     var profile = await profileStore.load();
-    final conference = profile.conference;
+    final (connectedProfile, _) = await _ensureConnected(profile);
+    profile = connectedProfile;
+    final conference = sync.conference ?? profile.conference;
 
-    if (_isValidHttpsBaseUrl(_baseUrl)) {
+    if (sync.connected && sync.token != null) {
       try {
-        if (profile.attendeeToken == null || profile.attendeeToken!.isEmpty) {
-          profile = (await syncProfile(profile)).profile;
-        }
-        final token = profile.attendeeToken;
-        if (token != null && token.isNotEmpty) {
-          final response = await _client
-              .get(
-                _baseUrl.resolve('/search').replace(
-                  queryParameters: {
-                    'q': trimmed,
-                    'conference': conference,
-                    'limit': '$safeLimit',
-                  },
-                ),
-                headers: {
-                  'Authorization': 'Bearer $token',
-                  'Accept': 'application/json',
-                },
-              )
-              .timeout(timeout);
-
-          if (response.statusCode == 200) {
-            final Object? body = jsonDecode(utf8.decode(response.bodyBytes));
-            if (body case {
-              'mode': final String rawMode,
-              'results': final List<Object?> results,
-            }) {
-              final talks = <ScheduleTalk>[];
-              final moments = <Conversation>[];
-              for (final hit in results) {
-                if (hit is! Map) continue;
-                final type = hit['type'];
-                final id = hit['id'];
-                if (id is! String || id.trim().isEmpty) continue;
-                if (type == 'talk') {
-                  talks.add(_parseSearchTalkHit(hit, catalog: catalog));
-                } else if (type == 'moment') {
-                  moments.add(
-                    _parseSearchMomentHit(
-                      hit,
-                      conference: conference,
-                      catalog: catalog,
-                    ),
-                  );
-                }
-              }
-              _usingLocalFallback = false;
-              return PublicSearchResult(
-                query: trimmed,
-                conference: conference,
-                mode: rawMode == 'keyword'
-                    ? PublicSearchMode.keyword
-                    : PublicSearchMode.hybrid,
-                talks: List.unmodifiable(talks),
-                moments: List.unmodifiable(moments),
-              );
+        final body = await sync.api.search(
+          sync.token!,
+          conference,
+          trimmed,
+          limit: safeLimit,
+        );
+        if (body case {
+          'mode': final String rawMode,
+          'results': final List<Object?> results,
+        }) {
+          final talks = <ScheduleTalk>[];
+          final moments = <SearchMomentHit>[];
+          for (final hit in results) {
+            if (hit is! Map) continue;
+            final type = hit['type'];
+            final id = hit['id'];
+            if (id is! String || id.trim().isEmpty) continue;
+            if (type == 'talk') {
+              talks.add(_parseSearchTalkHit(hit, catalog: catalog));
+            } else if (type == 'moment') {
+              moments.add(_parseSearchMomentHit(hit, catalog: catalog));
             }
-          } else if (!_isFallbackStatus(response.statusCode)) {
-            throw SearchException(switch (response.statusCode) {
-              401 || 403 =>
-                'Search access is unavailable. Please try again later.',
-              422 => 'Enter between 1 and 200 characters.',
-              429 => 'Too many searches. Please wait a moment and try again.',
-              _ => 'Search is unavailable right now. Please try again.',
-            });
           }
+          _usingLocalFallback = false;
+          return PublicSearchResult(
+            query: trimmed,
+            conference: conference,
+            mode: rawMode == 'keyword'
+                ? PublicSearchMode.keyword
+                : PublicSearchMode.hybrid,
+            talks: List.unmodifiable(talks),
+            moments: List.unmodifiable(moments),
+          );
         }
-      } on SearchException {
-        rethrow;
-      } on Exception {
+      } on AttendeeApiException catch (e) {
+        if (e.status != null && !_isFallbackStatus(e.status!)) {
+          throw SearchException(switch (e.status!) {
+            401 || 403 =>
+              'Search access is unavailable. Please try again later.',
+            422 => 'Enter between 1 and 200 characters.',
+            429 => 'Too many searches. Please wait a moment and try again.',
+            _ => 'Search is unavailable right now. Please try again.',
+          });
+        }
+      } on FormatException {
         // Fall through to bundled schedule fallback.
       }
     }
@@ -966,97 +975,50 @@ class AttendeeWavelengthBackend implements WavelengthBackend {
   }
 
   @override
-  Future<List<Conversation>> searchNotes(String interests) async {
-    final trimmed = interests.trim();
-    if (trimmed.runes.length < 2 || trimmed.runes.length > 120) {
-      throw const SearchException('Enter between 2 and 120 characters.');
-    }
-    final result = await searchContent(trimmed, limit: 20);
-    if (result.moments.isNotEmpty ||
-        result.mode != PublicSearchMode.localScheduleFallback) {
-      return result.moments;
-    }
-
-    final merged = <Conversation>[];
-    if (queryLegacySmokeEndpointOnFallback && _isValidHttpsBaseUrl(_baseUrl)) {
-      final smokeApi = ConversationApi(
-        client: _NonClosingClient(_client),
-        baseUrl: _baseUrl,
-        timeout: timeout,
-      );
-      try {
-        merged.addAll(await smokeApi.search(trimmed));
-      } on SearchException {
-        // Ignore legacy endpoint unavailability during local fallback.
-      }
-    }
-    merged.addAll(result.moments);
-    return List.unmodifiable(merged);
-  }
-
-  @override
   Future<TopicGraph> fetchGraph({int limit = 50}) async {
     final safeLimit = limit.clamp(1, 100);
     var profile = await profileStore.load();
-    final conference = profile.conference;
+    final (connectedProfile, _) = await _ensureConnected(profile);
+    profile = connectedProfile;
+    final conference = sync.conference ?? profile.conference;
 
-    if (_isValidHttpsBaseUrl(_baseUrl)) {
+    if (sync.connected && sync.token != null) {
       try {
-        if (profile.attendeeToken == null || profile.attendeeToken!.isEmpty) {
-          profile = (await syncProfile(profile)).profile;
+        final body = await sync.api.graph(
+          sync.token!,
+          conference,
+          limit: safeLimit,
+        );
+        if (body case {
+          'nodes': final List<Object?> rawNodes,
+          'edges': final List<Object?> rawEdges,
+        }) {
+          final nodes = [
+            for (final item in rawNodes)
+              if (item is Map) TopicGraphNode.fromJson(item),
+          ].where((n) => !ScheduleCatalog.isMetaTag(n.label)).toList();
+
+          final allowedIds = {for (final n in nodes) n.id};
+          final edges = [
+            for (final item in rawEdges)
+              if (item is Map) TopicGraphEdge.fromJson(item),
+          ].where(
+            (e) =>
+                allowedIds.contains(e.source) && allowedIds.contains(e.target),
+          ).toList();
+
+          // HTTP 200 is live success (`isLocalFallback: false`) even when `nodes` is empty.
+          _usingLocalFallback = false;
+          return TopicGraph(
+            conference: conference,
+            nodes: List.unmodifiable(nodes),
+            edges: List.unmodifiable(edges),
+            isLocalFallback: false,
+          );
         }
-        final token = profile.attendeeToken;
-        if (token != null && token.isNotEmpty) {
-          final response = await _client
-              .get(
-                _baseUrl.resolve('/graph').replace(
-                  queryParameters: {
-                    'conference': conference,
-                    'limit': '$safeLimit',
-                  },
-                ),
-                headers: {
-                  'Authorization': 'Bearer $token',
-                  'Accept': 'application/json',
-                },
-              )
-              .timeout(timeout);
-
-          if (response.statusCode == 200) {
-            final Object? body = jsonDecode(utf8.decode(response.bodyBytes));
-            if (body case {
-              'nodes': final List<Object?> rawNodes,
-              'edges': final List<Object?> rawEdges,
-            }) {
-              final nodes = [
-                for (final item in rawNodes)
-                  if (item is Map)
-                    TopicGraphNode.fromJson(item),
-              ].where((n) => !ScheduleCatalog.isMetaTag(n.label)).toList();
-
-              if (nodes.isNotEmpty) {
-                final allowedIds = {for (final n in nodes) n.id};
-                final edges = [
-                  for (final item in rawEdges)
-                    if (item is Map) TopicGraphEdge.fromJson(item),
-                ].where(
-                  (e) =>
-                      allowedIds.contains(e.source) &&
-                      allowedIds.contains(e.target),
-                ).toList();
-
-                _usingLocalFallback = false;
-                return TopicGraph(
-                  conference: conference,
-                  nodes: List.unmodifiable(nodes),
-                  edges: List.unmodifiable(edges),
-                  isLocalFallback: false,
-                );
-              }
-            }
-          }
-        }
-      } on Exception {
+      } on AttendeeApiException {
+        // Fall through to bundled schedule graph.
+      } on FormatException {
         // Fall through to bundled schedule graph.
       }
     }
@@ -1070,62 +1032,205 @@ class AttendeeWavelengthBackend implements WavelengthBackend {
   }
 
   @override
-  Future<List<FeedAlert>> fetchFeed({int limit = 20}) async {
-    final profile = await profileStore.load();
-    final token = profile.attendeeToken;
-    if (token == null || token.isEmpty || !_isValidHttpsBaseUrl(_baseUrl)) {
-      return const [];
+  Future<WavelengthRefreshResult> refreshRecommendations({
+    String? typedInterests,
+  }) async {
+    var profile = typedInterests != null
+        ? await profileStore.setInterests(typedInterests)
+        : await profileStore.load();
+
+    final syncResult = await syncProfile(profile);
+    profile = syncResult.profile;
+    if (!syncResult.syncedRemotely ||
+        !sync.connected ||
+        sync.token == null ||
+        sync.conference == null) {
+      _usingLocalFallback = true;
+      return const WavelengthRefreshResult(
+        liveSuccess: false,
+        fallbackMessage: unreachableFallbackMessage,
+      );
     }
-    final safeLimit = limit.clamp(1, 100);
+
+    // 1. Try optional `GET /recommendations` first; fall back cleanly to
+    //    `GET /graph` + `GET /search` on 404.
     try {
-      final response = await _client
-          .get(
-            _baseUrl.resolve('/feed').replace(
-              queryParameters: {
-                'limit': '$safeLimit',
-                'conference': profile.conference,
-              },
-            ),
-            headers: {
-              'Authorization': 'Bearer $token',
-              'Accept': 'application/json',
-            },
-          )
-          .timeout(timeout);
-      if (response.statusCode == 200) {
-        final Object? body = jsonDecode(utf8.decode(response.bodyBytes));
-        if (body case {'alerts': final List<Object?> rawAlerts}) {
-          return List.unmodifiable([
-            for (final item in rawAlerts)
-              if (item is Map) FeedAlert.fromJson(item),
-          ]);
+      final recBody = await sync.api.recommendations(
+        sync.token!,
+        sync.conference!,
+      );
+      final liveTopicCounts = <String, int>{};
+      final livePeopleByTopic = <String, int>{};
+      final recommendedTopicOrder = <String>[];
+
+      if (recBody['topics'] case final List<Object?> rawTopics) {
+        for (final item in rawTopics) {
+          if (item is! Map) continue;
+          final rawLabel = item['label'] ?? item['id'];
+          if (rawLabel is! String || rawLabel.trim().isEmpty) continue;
+          final label = rawLabel.trim();
+          if (ScheduleCatalog.isMetaTag(label)) continue;
+          final talksCount = item['talks'] is int ? item['talks'] as int : 0;
+          final momentsCount = item['moments'] is int
+              ? item['moments'] as int
+              : 0;
+          final peopleCount = item['people'] is int ? item['people'] as int : 0;
+          liveTopicCounts[label] =
+              (talksCount < 0 ? 0 : talksCount) +
+              (momentsCount < 0 ? 0 : momentsCount);
+          if (peopleCount > 0) {
+            livePeopleByTopic[label] = peopleCount;
+          }
+          if (!recommendedTopicOrder.contains(label)) {
+            recommendedTopicOrder.add(label);
+          }
         }
       }
-    } on Exception {
-      // Feed alerts are non-critical; degrade silently when offline or 503.
+
+      final basedOnSummary = _formatBasedOnSummary(recBody['based_on']);
+
+      var liveEdges = const <({String source, String target, int weight})>[];
+      final graph = await fetchGraph(limit: 50);
+      if (!graph.isLocalFallback) {
+        for (final n in graph.nodes) {
+          liveTopicCounts.putIfAbsent(n.label, () => n.count);
+        }
+        liveEdges = List.unmodifiable([
+          for (final e in graph.edges)
+            (source: e.source, target: e.target, weight: e.weight),
+        ]);
+      }
+
+      _usingLocalFallback = false;
+      return WavelengthRefreshResult(
+        liveSuccess: true,
+        liveTopicCounts: Map.unmodifiable(liveTopicCounts),
+        livePeopleByTopic: Map.unmodifiable(livePeopleByTopic),
+        liveEdges: liveEdges,
+        recommendedTopicOrder: List.unmodifiable(recommendedTopicOrder),
+        basedOnSummary: basedOnSummary,
+      );
+    } on AttendeeApiException catch (e) {
+      if (e.status != 404) {
+        _usingLocalFallback = true;
+        return const WavelengthRefreshResult(
+          liveSuccess: false,
+          fallbackMessage: unreachableFallbackMessage,
+        );
+      }
+      // 404 -> `/recommendations` not deployed yet; fall through to `/graph` + `/search`.
     }
-    return const [];
+
+    final graph = await fetchGraph(limit: 50);
+    if (graph.isLocalFallback) {
+      _usingLocalFallback = true;
+      return const WavelengthRefreshResult(
+        liveSuccess: false,
+        fallbackMessage: unreachableFallbackMessage,
+      );
+    }
+
+    final rawQuery = [
+      if (profile.interests.isNotEmpty) profile.interests,
+      ...profile.combinedProfileTopics.take(5),
+    ].join(' ').trim();
+    final query = _collapseSingleLine(rawQuery, maxRunes: 200);
+
+    final livePeopleByTopic = <String, int>{};
+    if (query.isNotEmpty) {
+      try {
+        final searchResult = await searchContent(query, limit: 30);
+        if (searchResult.mode != PublicSearchMode.localScheduleFallback) {
+          for (final moment in searchResult.moments) {
+            final canonicalTopics = catalog != null
+                ? catalog!.canonicalizeTopics(moment.topics)
+                : moment.topics;
+            for (final topic in canonicalTopics) {
+              livePeopleByTopic[topic] = (livePeopleByTopic[topic] ?? 0) + 1;
+            }
+          }
+        }
+      } on SearchException {
+        // Keep graph recommendations intact if optional moment search rejects input.
+      }
+    }
+
+    _usingLocalFallback = false;
+    return WavelengthRefreshResult(
+      liveSuccess: true,
+      liveTopicCounts: Map.unmodifiable({
+        for (final n in graph.nodes) n.label: n.count,
+      }),
+      livePeopleByTopic: Map.unmodifiable(livePeopleByTopic),
+      liveEdges: List.unmodifiable([
+        for (final e in graph.edges)
+          (source: e.source, target: e.target, weight: e.weight),
+      ]),
+    );
   }
 
   @override
-  Future<List<WavelengthSpace>> findWavelength({
-    required Set<String> activeTopics,
-    List<String> noteTexts = const [],
-    Set<String> goingTalkIds = const {},
+  Future<MatchesLookupResult> findSharedNoteMatches({
+    String? queryText,
+    int limit = 10,
   }) async {
-    final schedule = catalog;
-    if (schedule == null) return const [];
-    final profile = await profileStore.load();
-    final mergedTopics = <String>{
-      ...profile.activeWavelengthTopics,
-      ...activeTopics,
-    };
-    final mergedGoing = <String>{...profile.goingTalkIds, ...goingTalkIds};
-    return schedule.rankSpaces(
-      activeTopics: mergedTopics,
-      noteTexts: noteTexts,
-      goingTalkIds: mergedGoing,
-    );
+    var profile = await profileStore.load();
+    final (connectedProfile, _) = await _ensureConnected(profile);
+    profile = connectedProfile;
+    if (!sync.connected || sync.token == null || sync.conference == null) {
+      return const MatchesLookupResult();
+    }
+
+    final cappedQuery = queryText != null && queryText.trim().isNotEmpty
+        ? _collapseSingleLine(queryText, maxRunes: 500)
+        : null;
+
+    try {
+      final body = await sync.api.matches(
+        sync.token!,
+        conference: sync.conference!,
+        interests: cappedQuery,
+        limit: limit.clamp(1, 20),
+      );
+      if (body['matches'] case final List<Object?> rawMatches) {
+        final parsed = <SharedNoteMatch>[];
+        for (final item in rawMatches) {
+          if (item is! Map) continue;
+          final rawId = item['id'];
+          final rawExcerpt = item['excerpt'];
+          if (rawId is! String ||
+              rawId.trim().isEmpty ||
+              rawExcerpt is! String ||
+              rawExcerpt.trim().isEmpty) {
+            continue;
+          }
+          final rawTopics = item['topics'];
+          final topics = <String>[
+            if (rawTopics is List)
+              for (final t in rawTopics)
+                if (t is String && t.trim().isNotEmpty) t.trim(),
+          ];
+          parsed.add(
+            SharedNoteMatch(
+              id: rawId.trim(),
+              excerpt: rawExcerpt,
+              topics: catalog != null
+                  ? catalog!.canonicalizeTopics(topics)
+                  : topics,
+            ),
+          );
+        }
+        return MatchesLookupResult(matches: List.unmodifiable(parsed));
+      }
+      return const MatchesLookupResult();
+    } on AttendeeApiException catch (e) {
+      if (e.status == 422) {
+        return const MatchesLookupResult(needsInput: true);
+      }
+      return const MatchesLookupResult();
+    } on FormatException {
+      return const MatchesLookupResult();
+    }
   }
 
   PublicSearchResult _localSearchFallback({
@@ -1136,7 +1241,7 @@ class AttendeeWavelengthBackend implements WavelengthBackend {
   }) {
     final schedule = catalog;
     final matchedTalks = <ScheduleTalk>[];
-    final matchedMoments = <Conversation>[];
+    final matchedMoments = <SearchMomentHit>[];
 
     if (schedule != null) {
       final queryTopics = schedule.extractMatchedTopics(query).toSet();
@@ -1166,15 +1271,14 @@ class AttendeeWavelengthBackend implements WavelengthBackend {
             (saved.sharedText?.toLowerCase().contains(lowerQuery) ?? false);
         if (overlaps.isNotEmpty || sharedHit) {
           matchedMoments.add(
-            Conversation(
+            SearchMomentHit(
               id: saved.conversationId,
-              conference: conference,
-              shared: saved.shared,
-              sharedText: saved.shared ? saved.sharedText : null,
               topics: saved.topics,
               why: overlaps.isNotEmpty
                   ? 'Matches your interest in ${overlaps.join(', ')}'
                   : (saved.why ?? 'Saved on this phone'),
+              shared: saved.shared,
+              sharedText: saved.shared ? saved.sharedText : null,
             ),
           );
         }
@@ -1191,7 +1295,9 @@ class AttendeeWavelengthBackend implements WavelengthBackend {
   }
 
   @override
-  void close() => _client.close();
+  void close() {
+    if (ownsSync) sync.dispose();
+  }
 }
 
 /// Clearly labeled in-memory fake implementation of [WavelengthBackend] for
@@ -1200,8 +1306,7 @@ class AttendeeWavelengthBackend implements WavelengthBackend {
 class LabeledFakeWavelengthBackend implements WavelengthBackend {
   LabeledFakeWavelengthBackend({
     this.catalog,
-    this.smokeSearchApi,
-    this.ignoreSmokeSearchErrors = true,
+    this.profileStore,
     DateTime Function()? clock,
   }) : _clock = clock ?? DateTime.now;
 
@@ -1209,11 +1314,7 @@ class LabeledFakeWavelengthBackend implements WavelengthBackend {
       'Local demo mode (labeled fake backend seam · bundled KubeCon schedule)';
 
   final ScheduleCatalog? catalog;
-
-  /// Optional `/querysession` client to include the backend's labeled
-  /// `__setup_smoke__` demo document alongside local fake results.
-  final ConversationApi? smokeSearchApi;
-  final bool ignoreSmokeSearchErrors;
+  final PhoneProfileStore? profileStore;
   final DateTime Function() _clock;
 
   final List<Map<String, Object?>> _submittedPayloads = [];
@@ -1245,7 +1346,8 @@ class LabeledFakeWavelengthBackend implements WavelengthBackend {
     PhoneProfile profile, {
     String? interestsOverride,
   }) async {
-    _lastSyncedProfile = interestsOverride != null && interestsOverride.isNotEmpty
+    _lastSyncedProfile =
+        interestsOverride != null && interestsOverride.isNotEmpty
         ? profile.copyWith(interests: interestsOverride)
         : profile;
     return ProfileSyncResult(
@@ -1297,35 +1399,33 @@ class LabeledFakeWavelengthBackend implements WavelengthBackend {
       ),
     );
 
+    if (profileStore != null) {
+      await profileStore!.recordNote(
+        LocalNoteSummary(
+          conversationId: normalizedSubmission.conversationId,
+          topics: matchedTopics,
+          why: matchedTopics.isNotEmpty
+              ? 'Tuned: ${matchedTopics.join(', ')}'
+              : 'Note saved',
+          shared: normalizedSubmission.shared,
+          sharedText: normalizedSubmission.shared
+              ? normalizedSubmission.transcript
+              : null,
+          source: normalizedSubmission.source,
+          createdAt: nowUtc,
+        ),
+      );
+    }
+
     return NoteReceipt(
       documentId: docId,
       conversationId: normalizedSubmission.conversationId,
       revision: normalizedSubmission.revision,
       matchedTopics: matchedTopics,
       isLocalFallback: true,
-      statusLabel: fakeBanner,
+      transcriptSavedRemotely: false,
+      statusLabel: NoteReceipt.savedLocallyLabel,
     );
-  }
-
-  @override
-  Future<List<Conversation>> searchNotes(String interests) async {
-    final trimmed = interests.trim();
-    if (trimmed.runes.length < 2 || trimmed.runes.length > 120) {
-      throw const SearchException('Enter between 2 and 120 characters.');
-    }
-
-    final results = <Conversation>[];
-    if (smokeSearchApi != null) {
-      try {
-        results.addAll(await smokeSearchApi!.search(trimmed));
-      } on SearchException {
-        if (!ignoreSmokeSearchErrors) rethrow;
-      }
-    }
-
-    final content = await searchContent(trimmed, limit: 20);
-    results.addAll(content.moments);
-    return List.unmodifiable(results);
   }
 
   @override
@@ -1343,7 +1443,7 @@ class LabeledFakeWavelengthBackend implements WavelengthBackend {
         catalog?.extractMatchedTopics(trimmed).toSet() ?? const <String>{};
     final lowerQuery = trimmed.toLowerCase();
 
-    final moments = <Conversation>[];
+    final moments = <SearchMomentHit>[];
     for (final entry in _storedNotes) {
       if (!entry.submission.expiresAt.isAfter(nowUtc)) continue;
       final overlappingTopics = [
@@ -1364,15 +1464,14 @@ class LabeledFakeWavelengthBackend implements WavelengthBackend {
 
       // Privacy invariant: unshared notes NEVER expose `transcript` in search.
       moments.add(
-        Conversation(
+        SearchMomentHit(
           id: entry.documentId,
-          conference: entry.submission.conference,
+          topics: entry.matchedTopics,
+          why: why,
           shared: entry.submission.shared,
           sharedText: entry.submission.shared
               ? entry.submission.transcript
               : null,
-          topics: entry.matchedTopics,
-          why: why,
         ),
       );
       if (moments.length >= safeLimit) break;
@@ -1412,29 +1511,29 @@ class LabeledFakeWavelengthBackend implements WavelengthBackend {
       );
 
   @override
-  Future<List<FeedAlert>> fetchFeed({int limit = 20}) async => const [];
-
-  @override
-  Future<List<WavelengthSpace>> findWavelength({
-    required Set<String> activeTopics,
-    List<String> noteTexts = const [],
-    Set<String> goingTalkIds = const {},
+  Future<WavelengthRefreshResult> refreshRecommendations({
+    String? typedInterests,
   }) async {
-    final schedule = catalog;
-    if (schedule == null) return const [];
-    final allNoteTexts = <String>[
-      ...noteTexts,
-      for (final entry in _storedNotes) entry.submission.transcript,
-    ];
-    return schedule.rankSpaces(
-      activeTopics: activeTopics,
-      noteTexts: allNoteTexts,
-      goingTalkIds: goingTalkIds,
-    );
+    if (typedInterests != null && profileStore != null) {
+      await profileStore!.setInterests(typedInterests);
+    }
+    return const WavelengthRefreshResult(liveSuccess: false);
   }
 
   @override
-  void close() => smokeSearchApi?.close();
+  Future<MatchesLookupResult> findSharedNoteMatches({
+    String? queryText,
+    int limit = 10,
+  }) async {
+    final clean = queryText?.trim() ?? '';
+    if (clean.isEmpty) {
+      return const MatchesLookupResult(needsInput: true);
+    }
+    return const MatchesLookupResult();
+  }
+
+  @override
+  void close() {}
 }
 
 class _StoredFakeNote {
@@ -1447,15 +1546,6 @@ class _StoredFakeNote {
   final String documentId;
   final NoteSubmission submission;
   final List<String> matchedTopics;
-}
-
-class _NonClosingClient extends http.BaseClient {
-  _NonClosingClient(this._inner);
-  final http.Client _inner;
-
-  @override
-  Future<http.StreamedResponse> send(http.BaseRequest request) =>
-      _inner.send(request);
 }
 
 bool _isValidHttpsBaseUrl(Uri url) =>
@@ -1485,6 +1575,8 @@ String _collapseSingleLine(String input, {required int maxRunes}) {
   return String.fromCharCodes(runes.take(maxRunes)).trimRight();
 }
 
+String? _nullIfEmpty(String value) => value.isEmpty ? null : value;
+
 List<String> _normalizeSubmissionTopics(
   Iterable<String> rawTopics, {
   int maxCount = 20,
@@ -1513,23 +1605,6 @@ List<String> _resolveMatchedTopics({
     ...catalog.extractMatchedTopics(transcript),
   };
   return List.unmodifiable(combined.take(20));
-}
-
-String _evolveInterests({
-  required String existingInterests,
-  required List<String> matchedTopics,
-  required String transcript,
-}) {
-  final snippet = _collapseSingleLine(transcript, maxRunes: 240);
-  final topicClause = matchedTopics.isNotEmpty
-      ? 'Topics: ${matchedTopics.join(', ')}'
-      : '';
-  final parts = <String>[
-    if (topicClause.isNotEmpty) topicClause,
-    if (snippet.isNotEmpty) snippet,
-    if (existingInterests.isNotEmpty) existingInterests,
-  ];
-  return _collapseSingleLine(parts.join('; '), maxRunes: 1000);
 }
 
 ScheduleTalk _parseSearchTalkHit(
@@ -1578,9 +1653,8 @@ ScheduleTalk _parseSearchTalkHit(
   );
 }
 
-Conversation _parseSearchMomentHit(
+SearchMomentHit _parseSearchMomentHit(
   Map<Object?, Object?> hit, {
-  required String conference,
   required ScheduleCatalog? catalog,
 }) {
   final id = (hit['id'] as String).trim();
@@ -1600,26 +1674,22 @@ Conversation _parseSearchMomentHit(
       ? topics
       : _normalizeSubmissionTopics(rawList, maxCount: 5);
 
-  final hitConference = hit['conference'] is String
-      ? hit['conference'] as String
-      : conference;
-  final isDemo = hitConference == Conversation.demoConference;
+  // S2: Populate sharedText ONLY when `hit['shared'] == true` (zero `__setup_smoke__` exemption).
   final isShared = hit['shared'] == true;
   final rawGist = hit['gist'];
   final rawWhy = hit['why'];
   final generatedWhy = rawWhy is String && rawWhy.trim().isNotEmpty
-      ? rawWhy.trim()
+      ? _collapseSingleLine(rawWhy, maxRunes: 280)
       : (displayTopics.isNotEmpty
             ? 'Matches your interest in ${displayTopics.join(', ')}'
             : 'Matched attendee note');
 
-  return Conversation(
+  return SearchMomentHit(
     id: id,
-    conference: hitConference,
-    shared: isShared,
-    sharedText: (isShared || isDemo) && rawGist is String ? rawGist : null,
-    topics: List.unmodifiable(displayTopics),
+    topics: displayTopics,
     why: generatedWhy,
+    shared: isShared,
+    sharedText: isShared && rawGist is String ? rawGist : null,
   );
 }
 
@@ -1637,7 +1707,6 @@ TopicGraph _buildLocalTopicGraph({
     );
   }
   final topTopics = catalog.popularTopics(limit: limit);
-  final allowed = topTopics.toSet();
   final nodes = [
     for (final topic in topTopics)
       if (catalog.sessionCountForTopic(topic) > 0)
@@ -1648,37 +1717,13 @@ TopicGraph _buildLocalTopicGraph({
         ),
   ];
 
-  final edgeWeights = <(String, String), int>{};
-  for (final talk in catalog.talks) {
-    if (talk.isLogistics) continue;
-    final topics = [
-      for (final t in catalog.effectiveTopicsForTalk(talk.id))
-        if (allowed.contains(t)) t,
-    ]..sort();
-    for (var i = 0; i < topics.length; i++) {
-      for (var j = i + 1; j < topics.length; j++) {
-        final pair = (topics[i], topics[j]);
-        edgeWeights[pair] = (edgeWeights[pair] ?? 0) + 1;
-      }
-    }
-  }
-
-  final sortedPairs = edgeWeights.entries.toList()
-    ..sort((a, b) {
-      final byWeight = b.value.compareTo(a.value);
-      if (byWeight != 0) return byWeight;
-      final bySource = a.key.$1.compareTo(b.key.$1);
-      if (bySource != 0) return bySource;
-      return a.key.$2.compareTo(b.key.$2);
-    });
-
+  final rawEdges = catalog.coOccurringEdgesForTopics(
+    [for (final n in nodes) n.label],
+    maxEdges: nodes.length * nodes.length,
+  );
   final edges = [
-    for (final entry in sortedPairs)
-      TopicGraphEdge(
-        source: entry.key.$1,
-        target: entry.key.$2,
-        weight: entry.value,
-      ),
+    for (final e in rawEdges)
+      TopicGraphEdge(source: e.source, target: e.target, weight: e.weight),
   ];
 
   return TopicGraph(
@@ -1687,4 +1732,31 @@ TopicGraph _buildLocalTopicGraph({
     edges: List.unmodifiable(edges),
     isLocalFallback: true,
   );
+}
+
+String? _formatBasedOnSummary(Object? rawBasedOn) {
+  if (rawBasedOn is! Map) return null;
+  final parts = <String>[];
+  final notes = rawBasedOn['notes'];
+  if (notes is int && notes > 0) {
+    parts.add('$notes ${notes == 1 ? 'note' : 'notes'}');
+  }
+  if (rawBasedOn['topics'] case final List<Object?> rawTopics) {
+    final clean = <String>[];
+    for (final item in rawTopics) {
+      if (item is String && item.trim().isNotEmpty) {
+        clean.add(_collapseSingleLine(item, maxRunes: 64));
+      }
+    }
+    if (clean.isNotEmpty) {
+      parts.add(clean.take(3).join(', '));
+    }
+  }
+  if (rawBasedOn['interests'] == true) {
+    parts.add('your interests');
+  }
+  if (parts.isEmpty) return null;
+  if (parts.length == 1) return 'Based on ${parts.first}';
+  if (parts.length == 2) return 'Based on ${parts[0]} and ${parts[1]}';
+  return 'Based on ${parts.sublist(0, parts.length - 1).join(', ')}, and ${parts.last}';
 }

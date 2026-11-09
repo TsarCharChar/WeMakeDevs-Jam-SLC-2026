@@ -91,6 +91,11 @@ class TranscriptSync extends ChangeNotifier {
   String? error;
   bool get connected => loaded && _account != null && !_originMismatch;
   String? get handle => _account?['handle'] as String?;
+  String? get token => connected ? (_account?['token'] as String?) : null;
+  String? get conference =>
+      connected ? (_account?['conference'] as String?) : null;
+  String? get stream => connected ? (_account?['stream'] as String?) : null;
+  int? get lastSequence => _nextSequence > 0 ? _nextSequence - 1 : null;
   bool get hasPending => _segments.any(
     (s) =>
         s.pending != null ||
@@ -200,7 +205,14 @@ class TranscriptSync extends ChangeNotifier {
     }
   }
 
-  Future<void> connect(String handle, String conference) async {
+  Future<void> connect(
+    String handle,
+    String conference, {
+    String? displayName,
+    String? interests,
+    List<String>? topics,
+    List<String>? starredTalks,
+  }) async {
     if (!loaded || _originMismatch || connecting || _account != null) return;
     if (!RegExp(r'^[A-Za-z0-9][A-Za-z0-9_-]{1,31}$').hasMatch(handle) ||
         !RegExp(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$').hasMatch(conference)) {
@@ -212,7 +224,41 @@ class TranscriptSync extends ChangeNotifier {
     error = null;
     _notify();
     try {
-      final profile = await api.profile(handle, conference);
+      final cleanName = displayName != null && displayName.trim().isNotEmpty
+          ? displayName.trim()
+          : null;
+      final hasProfileFields =
+          cleanName != null ||
+          interests != null ||
+          topics != null ||
+          starredTalks != null;
+      Map<String, dynamic> profile;
+      if (hasProfileFields) {
+        try {
+          profile = await api.updateProfile(
+            handle,
+            conference,
+            displayName: cleanName,
+            interests: interests ?? '',
+            topics: topics ?? const <String>[],
+            starredTalks: starredTalks ?? const <String>[],
+          );
+        } on AttendeeApiException catch (e) {
+          if (cleanName != null && (e.status == 422 || e.status == 503)) {
+            profile = await api.updateProfile(
+              handle,
+              conference,
+              interests: interests ?? '',
+              topics: topics ?? const <String>[],
+              starredTalks: starredTalks ?? const <String>[],
+            );
+          } else {
+            rethrow;
+          }
+        }
+      } else {
+        profile = await api.profile(handle, conference);
+      }
       final token = profile['token'];
       if (token is! String ||
           token.isEmpty ||
@@ -227,6 +273,11 @@ class TranscriptSync extends ChangeNotifier {
         'conference': conference,
         'token': token,
         'stream': randomDeviceId(),
+        if (hasProfileFields) ...{
+          'interests': interests ?? '',
+          'topics': topics ?? const <String>[],
+          'starred_talks': starredTalks ?? const <String>[],
+        },
       };
       enabled = true;
       await _persist();
@@ -237,6 +288,18 @@ class TranscriptSync extends ChangeNotifier {
       connecting = false;
       _notify();
     }
+  }
+
+  void rememberProfileFields({
+    required String interests,
+    required List<String> topics,
+    required List<String> starredTalks,
+  }) {
+    final acc = _account;
+    if (acc == null) return;
+    acc['interests'] = interests;
+    acc['topics'] = List<String>.from(topics);
+    acc['starred_talks'] = List<String>.from(starredTalks);
   }
 
   Future<void> setEnabled(bool value) async {
@@ -256,11 +319,27 @@ class TranscriptSync extends ChangeNotifier {
     connecting = true;
     _notify();
     try {
-      await api.profile(
-        handle!,
-        _account!['conference'] as String,
-        token: _account!['token'] as String,
-      );
+      final storedTopics = _account!['topics'];
+      if (storedTopics is List) {
+        await api.updateProfile(
+          handle!,
+          _account!['conference'] as String,
+          token: _account!['token'] as String,
+          interests: (_account!['interests'] as String?) ?? '',
+          topics: storedTopics.whereType<String>().toList(growable: false),
+          starredTalks:
+              (_account!['starred_talks'] as List?)
+                  ?.whereType<String>()
+                  .toList(growable: false) ??
+              const <String>[],
+        );
+      } else {
+        await api.profile(
+          handle!,
+          _account!['conference'] as String,
+          token: _account!['token'] as String,
+        );
+      }
       await retry();
     } on AttendeeApiException catch (e) {
       error = e.message;

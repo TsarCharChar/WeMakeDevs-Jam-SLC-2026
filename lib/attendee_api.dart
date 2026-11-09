@@ -119,6 +119,19 @@ class AttendeeApi {
     String handle,
     String conference, {
     String? token,
+  }) => updateProfile(handle, conference, token: token);
+
+  Future<Map<String, dynamic>> getProfile(String token) =>
+      _request('GET', '/me', token: token);
+
+  Future<Map<String, dynamic>> updateProfile(
+    String handle,
+    String conference, {
+    String? token,
+    String? displayName,
+    String interests = '',
+    List<String> topics = const <String>[],
+    List<String> starredTalks = const <String>[],
   }) => _request(
     'PUT',
     '/me',
@@ -126,9 +139,86 @@ class AttendeeApi {
     body: {
       'handle': handle,
       'conference': conference,
-      'interests': '',
-      'topics': <String>[],
-      'starred_talks': <String>[],
+      if (displayName != null && displayName.trim().isNotEmpty)
+        'display_name': displayName.trim(),
+      'interests': interests,
+      'topics': topics,
+      'starred_talks': starredTalks,
+    },
+  );
+
+  Future<Map<String, dynamic>> graph(
+    String token,
+    String conference, {
+    int limit = 50,
+  }) => _request(
+    'GET',
+    '/graph',
+    token: token,
+    query: {'conference': conference, 'limit': '${limit.clamp(1, 100)}'},
+  );
+
+  Future<Map<String, dynamic>> search(
+    String token,
+    String conference,
+    String queryText, {
+    int limit = 20,
+  }) => _request(
+    'GET',
+    '/search',
+    token: token,
+    query: {
+      'q': queryText,
+      'conference': conference,
+      'limit': '${limit.clamp(1, 50)}',
+    },
+  );
+
+  Future<Map<String, dynamic>> createMoment(
+    String token,
+    Map<String, dynamic> payload,
+  ) => _request('POST', '/moments', token: token, body: payload);
+
+  Future<Map<String, dynamic>> recommendations(
+    String token,
+    String conference,
+  ) => _request(
+    'GET',
+    '/recommendations',
+    token: token,
+    query: {'conference': conference},
+  );
+
+  Future<Map<String, dynamic>> setSegmentSharing(
+    String token,
+    String stream,
+    int sequence, {
+    required bool shared,
+    bool participantsConsented = false,
+  }) => _request(
+    'PUT',
+    '/transcripts/$stream/segments/$sequence/sharing',
+    token: token,
+    body: {
+      'shared': shared,
+      'participants_consented': participantsConsented,
+    },
+  );
+
+  Future<Map<String, dynamic>> matches(
+    String token, {
+    required String conference,
+    String? interests,
+    int limit = 10,
+  }) => _request(
+    'POST',
+    '/matches',
+    token: token,
+    body: {
+      'conference': conference,
+      if (interests != null && interests.trim().isNotEmpty)
+        'interests': interests.trim(),
+      'limit': limit.clamp(1, 20),
     },
   );
 

@@ -60,7 +60,8 @@ abstract final class WavelengthColors {
   // --- High-Contrast Hall Typography ---
   static const Color brandWhite = Color(0xFFFFFFFF);
   static const Color primaryText = Color(0xFFF4F8FF);
-  static const Color secondaryText = Color(0xFF9BB0C9);
+  static const Color secondaryText = Color(0xFFA9BCD0);
+  static const Color mutedText = Color(0xFF6F8298);
 
   // --- Blue Phosphor Radar Signal Tokens (Idle Mic, Waves, Sweep, Spaces) ---
   static const Color phosphorBlue = Color(0xFF38BDF8);
@@ -70,20 +71,26 @@ abstract final class WavelengthColors {
   static const Color phosphorAfterglow = Color(0xFF1E40AF);
   static const Color onPhosphor = Color(0xFF031824);
 
-  /// Starlight white core for Scheduled Talk 4-point diamond/star beacons.
-  static const Color talkStarlight = Color(0xFFF8FAFC);
+  /// Starlight / ice white core for Scheduled Talk 4-point diamond beacons.
+  static const Color talkStarlight = Color(0xFFE6F1FF);
+
+  /// Aqua accent for your own notes and linked-topic suggestions (`#5EEAD4`).
+  static const Color noteAqua = Color(0xFF5EEAD4);
+
+  /// Violet accent for people tuned in sparks (`#A78BFA`).
+  static const Color personViolet = Color(0xFFA78BFA);
 
   // --- Active Recording ONLY (Mic Hot) ---
-  /// Warm Signal Coral/Amber reserved strictly for live user microphone capture.
-  /// Never used on idle controls or other people's notes.
+  /// Warm Signal Coral reserved strictly for live user microphone capture.
+  /// Never used on idle controls, errors, or other people's notes.
   static const Color micHotCoral = Color(0xFFFF7A59);
-  static const Color micHotGlow = Color(0xFFFF5733);
+  static const Color micHotGlow = Color(0xFFE85A37);
   static const Color onMicHot = Color(0xFF220702);
 
-  // --- Status Accents ---
+  // --- Status & Error Accents (Amber — never Coral!) ---
   static const Color warningAmber = Color(0xFFF6C445);
-  static const Color errorBannerBg = Color(0xFF2A1215);
-  static const Color errorBannerBorder = Color(0xFFFF7A59);
+  static const Color errorBannerBg = Color(0xFF241C09);
+  static const Color errorBannerBorder = Color(0xFFF6C445);
 }
 
 /// Distinguishes Scheduled Conference Talks from emergent Topic Spaces.
@@ -261,8 +268,8 @@ abstract final class WavelengthTypography {
   static const TextStyle brandWordmark = TextStyle(
     color: WavelengthColors.brandWhite,
     fontSize: 15.0,
-    fontWeight: FontWeight.w800,
-    letterSpacing: 2.4,
+    fontWeight: FontWeight.w700,
+    letterSpacing: 5.0,
     height: 1.1,
   );
 
@@ -336,8 +343,8 @@ abstract final class WavelengthTheme {
       onPrimary: WavelengthColors.onPhosphor,
       secondary: WavelengthColors.phosphorCyan,
       onSecondary: WavelengthColors.onPhosphor,
-      error: WavelengthColors.micHotCoral,
-      onError: WavelengthColors.onMicHot,
+      error: WavelengthColors.warningAmber,
+      onError: WavelengthColors.errorBannerBg,
       outline: WavelengthColors.borderSpecular,
       outlineVariant: WavelengthColors.borderSubtle,
     );
@@ -434,7 +441,7 @@ abstract final class WavelengthTheme {
         hintStyle: WavelengthTypography.supporting,
         helperStyle: WavelengthTypography.supporting,
         errorStyle: WavelengthTypography.supporting.copyWith(
-          color: WavelengthColors.micHotCoral,
+          color: WavelengthColors.warningAmber,
         ),
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 16,
@@ -453,12 +460,12 @@ abstract final class WavelengthTheme {
         ),
         errorBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
-          borderSide: const BorderSide(color: WavelengthColors.micHotCoral),
+          borderSide: const BorderSide(color: WavelengthColors.warningAmber),
         ),
         focusedErrorBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
           borderSide: const BorderSide(
-            color: WavelengthColors.micHotCoral,
+            color: WavelengthColors.warningAmber,
             width: 1.6,
           ),
         ),
