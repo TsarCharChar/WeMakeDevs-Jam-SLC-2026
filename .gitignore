@@ -1,4 +1,8 @@
 # Miscellaneous
+# Downloaded speech recognition weights
+/assets/models/*.bin
+/assets/models/*.partial
+
 *.class
 *.lock
 *.log
@@ -117,3 +121,14 @@ app.*.symbols
 !**/ios/**/default.perspectivev3
 !/packages/flutter_tools/test/data/dart_dependencies_test/**/.packages
 !/dev/ci/**/Gemfile.lock
+
+# Local IDE state and secrets
+.idea/
+.vs/
+.playwright-mcp/
+*.iml
+.env
+.env.*
+!.env.example
+# Application dependency lockfile
+!pubspec.lock
