@@ -22,7 +22,7 @@ if (Test-ModelFile $target) {
 }
 
 $curlName = if ($env:OS -eq 'Windows_NT') { 'curl.exe' } else { 'curl' }
-$curl = Get-Command $curlName -CommandType Application -ErrorAction Stop
+$curl = Get-Command $curlName -CommandType Application -ErrorAction Stop | Select-Object -First 1
 New-Item -ItemType Directory -Path $modelDir -Force | Out-Null
 Write-Output "Downloading $filename (574 MB)..."
 & $curl.Source --location --fail --retry 3 --connect-timeout 30 --speed-limit 1024 --speed-time 120 --output $partial $url
