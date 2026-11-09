@@ -11,4 +11,4 @@ resources:
 images:
   - name: app
     newName: ghcr.io/tsarcharchar/wemakedevs-jam-slc-2026
-    newTag: 1aa3c44
+    newTag: e643343
