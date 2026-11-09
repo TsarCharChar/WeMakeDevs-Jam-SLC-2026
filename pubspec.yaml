@@ -63,6 +63,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/models/ggml-large-v3-turbo-q5_0.bin
+    - assets/data/kubecon_schedule.json
 
   # To add assets to your application, add an assets section, like this:
   # assets:

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
@@ -10,16 +11,56 @@ import 'package:whisper_ggml/whisper_ggml.dart';
 
 enum RecordingPhase { idle, preparing, recording, stopping }
 
+/// Computes normalized perceptual mic energy (0.0..1.0) from 16-bit LE PCM.
+double computePcmLevel(Uint8List bytes) {
+  final sampleCount = bytes.length ~/ 2;
+  if (sampleCount == 0) return 0;
+  final data = ByteData.sublistView(bytes);
+  var sumSquares = 0.0;
+  // Stride by up to 4 samples on large chunks to keep UI callback ultra-light.
+  final step = sampleCount > 512 ? 4 : 1;
+  var counted = 0;
+  for (var i = 0; i < sampleCount; i += step) {
+    final sample = data.getInt16(i * 2, Endian.little) / 32768.0;
+    sumSquares += sample * sample;
+    counted++;
+  }
+  if (counted == 0) return 0;
+  final rms = math.sqrt(sumSquares / counted);
+  if (rms < 0.002) return 0;
+  // Map roughly -48 dBFS .. -6 dBFS onto 0.0 .. 1.0 with gentle curve.
+  final db = 20.0 * (math.log(rms) / math.ln10);
+  return ((db + 48.0) / 42.0).clamp(0.0, 1.0);
+}
+
 class RecordingController extends ChangeNotifier {
+  RecordingController({this.onNoteCompleted});
+
+  static const Duration maxDuration = Duration(minutes: 3);
+  static const int waveformBarCount = 28;
+
+  final ValueChanged<String>? onNoteCompleted;
   final _recorder = AudioRecorder();
   WhisperLiveSession? _session;
   StreamSubscription<Uint8List>? _audio;
   StreamSubscription<String>? _text;
   Timer? _limit;
+  Timer? _clock;
+  DateTime? _startedAt;
   bool _disposed = false, _cancelled = false;
   RecordingPhase phase = RecordingPhase.idle;
   String transcript = '', status = 'Ready to capture your next note.';
   String? error;
+  double micLevel = 0;
+  Duration elapsed = Duration.zero;
+  final List<double> _bars = List<double>.filled(
+    waveformBarCount,
+    0,
+    growable: true,
+  );
+
+  List<double> get waveformBars => List<double>.unmodifiable(_bars);
+
   bool get busy =>
       phase == RecordingPhase.preparing || phase == RecordingPhase.stopping;
   void update() {
@@ -88,7 +129,17 @@ class RecordingController extends ChangeNotifier {
         ),
       );
       _audio = stream.listen(
-        (bytes) => _session?.feed(bytes),
+        (bytes) {
+          _session?.feed(bytes);
+          final rawLevel = computePcmLevel(bytes);
+          // Smooth attack/decay for fluid wave physics.
+          micLevel = rawLevel > micLevel
+              ? micLevel * 0.35 + rawLevel * 0.65
+              : micLevel * 0.72 + rawLevel * 0.28;
+          if (_bars.length >= waveformBarCount) _bars.removeAt(0);
+          _bars.add(micLevel);
+          update();
+        },
         onError: (Object e) {
           error = 'Microphone interrupted: $e';
           unawaited(stop());
@@ -96,8 +147,17 @@ class RecordingController extends ChangeNotifier {
       );
       if (_cancelled || _disposed) return;
       phase = RecordingPhase.recording;
+      _startedAt = DateTime.now();
+      elapsed = Duration.zero;
       status = 'Listening on this device · tap to stop';
-      _limit = Timer(const Duration(minutes: 3), () => unawaited(stop()));
+      _limit = Timer(maxDuration, () => unawaited(stop()));
+      _clock = Timer.periodic(const Duration(milliseconds: 250), (_) {
+        final started = _startedAt;
+        if (started == null || phase != RecordingPhase.recording) return;
+        elapsed = DateTime.now().difference(started);
+        if (elapsed > maxDuration) elapsed = maxDuration;
+        update();
+      });
     } catch (e) {
       error = 'Could not start recording: $e';
       _cancelled = true;
@@ -118,6 +178,13 @@ class RecordingController extends ChangeNotifier {
 
   Future<void> _cleanup() async {
     _limit?.cancel();
+    _clock?.cancel();
+    _clock = null;
+    _startedAt = null;
+    micLevel = 0;
+    for (var i = 0; i < _bars.length; i++) {
+      _bars[i] = 0;
+    }
     try {
       await _recorder.stop();
     } catch (_) {}
@@ -140,18 +207,24 @@ class RecordingController extends ChangeNotifier {
     }
     if (phase != RecordingPhase.recording) return;
     phase = RecordingPhase.stopping;
-    status = 'Finishing your transcript…';
+    status = 'Finishing your note…';
     update();
+    var notifyCompleted = false;
     try {
       await _cleanup();
+      notifyCompleted = transcript.trim().isNotEmpty;
     } catch (e) {
       error = 'Could not finish transcription: $e';
     }
     phase = RecordingPhase.idle;
+    elapsed = Duration.zero;
     status = transcript.isEmpty
         ? 'No speech detected. Try again.'
-        : 'Note captured · kept for this session';
+        : 'Note captured · kept on this phone';
     update();
+    if (notifyCompleted && !_disposed) {
+      onNoteCompleted?.call(transcript.trim());
+    }
   }
 
   @override
