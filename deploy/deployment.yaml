@@ -36,6 +36,10 @@ spec:
           envFrom:
             - secretRef:
                 name: confellow-elastic
+            # Optional credentials/configuration for the authenticated vector API.
+            - secretRef:
+                name: app-vector-search
+                optional: true
 
           resources:
             requests:
@@ -50,6 +54,7 @@ spec:
               path: /readyz
               port: http
             periodSeconds: 5
+            timeoutSeconds: 10
 
           livenessProbe:
             httpGet:
