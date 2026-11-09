@@ -185,6 +185,14 @@ void main() {
       for (final topic in catalog.topicVocabulary) {
         expect(ScheduleCatalog.isMetaTag(topic), isFalse);
       }
+      // Words the schedule has no tag for go to the closest tag it does have, in the order they
+      // were said, and never fall back to Kubernetes or to whatever is popular.
+      expect(
+        catalog.extractMatchedTopics('python and rust and machine learning'),
+        ['Application Development + Delivery', 'AI Inference + Agentic'],
+      );
+      // Words with no close tag still tune nothing, so the card says "Note saved".
+      expect(catalog.extractMatchedTopics('grabbing lunch with my cousin'), isEmpty);
     });
 
     test('extractMatchedTopics matches deterministically without inventing topics or substring false positives', () {
