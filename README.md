@@ -1,18 +1,79 @@
-# Mobile app development
+# ConFellow — Find Your Conference Wavelength
 
-Backend geospatial search and opt-in presence preparation are documented in
-[Geospatial conversation presence](docs/geospatial.md). Optional geographic
-filters work on authenticated `/matches` and synthetic `/querysession` search;
-attendee check-in persistence and Flutter location controls are not connected yet.
+**ConFellow** is a privacy-first native mobile app (Flutter for Android & iOS) backed by **Elasticsearch Serverless** (`semantic_text` / `.jina-embeddings-v5-text-small`) and **FastAPI** on Kubernetes (`https://grindset.cnh.radarhq.io`). Attendees speak or type quick personal notes, tune into KubeCon schedule topics and talks on a standing-wave constellation scope, match semantically with shared attendee notes, and jump into topic or session chat rooms — without accounts, passwords, or uploading raw audio.
 
-## Prerequisites
+---
 
-- Install the [Flutter SDK](https://docs.flutter.dev/install) (includes Dart) and add its `bin` directory to PATH.
-- For Android, follow the [Android tooling setup](https://docs.flutter.dev/platform-integration/android/setup), including Android Studio, SDK tools, and a device or emulator.
-- For iOS builds, use a Mac with [Xcode and the iOS tooling](https://docs.flutter.dev/platform-integration/ios/setup).
-- Install Git and PowerShell. The model download script also requires `curl` (`curl.exe` on Windows).
+## Install the Android Demo APK (No Build Required)
 
-Validate your Flutter installation:
+Download `ConFellow-demo-arm64.apk` (`137 MB`, includes the quantized offline Whisper speech model and 600-session KubeCon schedule):
+
+- **Google Drive (Anyone with the link):** [Download `ConFellow-demo-arm64.apk` from Google Drive](https://drive.google.com/file/d/1fxSIh_kZ5mCSnpYdxE_DqtGNze2UPKq1/view?usp=sharing)
+- **GitHub Release (`v1.0.0`):** [Direct APK Download](https://github.com/TsarCharChar/WeMakeDevs-Jam-SLC-2026/releases/download/v1.0.0/ConFellow-demo-arm64.apk) · [Release Notes](https://github.com/TsarCharChar/WeMakeDevs-Jam-SLC-2026/releases/tag/v1.0.0)
+- **SHA-256:** `f2cdde37fb9f0f08381c469c9af6a2284a48cda191022c17c7b7b18337f9ccfd` (`143,256,368` bytes)
+
+### Installation Steps on an Android Phone
+
+1. **Android 64-bit ARM phones only (`arm64-v8a`):** Open either link above directly on your Android phone and download `ConFellow-demo-arm64.apk`. *(This release APK targets physical ARM64 phones rather than `x86_64` desktop emulators.)*
+2. Tap the downloaded `.apk` file in your browser downloads or **Files** app.
+3. When Android asks, **allow your browser / Files app to install unknown apps**.
+4. If Google Play Protect warns that it does not recognize the developer, tap **More details → Install anyway**.
+5. Launch **ConFellow**, optionally enter a display name and pick a few starter topics (or tap **Skip**), and grant microphone access when recording a voice note.
+
+---
+
+## How ConFellow Works
+
+### 1. First Launch & Zero-Account Identity
+- Every phone generates an opaque attendee handle (`cf_<20-hex>`) and claims an attendee bearer token via `PUT /me`, stored exclusively in platform-encrypted storage (`FlutterSecureStorage` — Keystore on Android, Keychain on iOS).
+- On first launch you can optionally enter a **display name** (`display_name`, shown next to messages you send in chat rooms; otherwise `guest-xxxxxx` is used) and pick starter topics, or tap **Skip** to start immediately.
+
+### 2. Note Tab (On-Device Voice + Text Capture & Undo)
+- **Voice notes (`MicHalo` + offline Whisper):** Tap the `128×128` microphone button once to record (up to 3 minutes; coral `#FF7A59` indicates live mic capture) and tap again to stop. Speech is transcribed **on your phone** using quantized `whisper.cpp` (`ggml-base.en-q5_1.bin`). Raw audio stays in memory on your phone and is never written to disk or sent to the server.
+- **Typed notes:** Tap **Type a note** to type or paste text (text is the only supported input format; there are no file uploads).
+- **Undo & Review before sending:** Finishing a note immediately previews matched KubeCon schedule tags (`Tuned: Cilium · Observability`, or `Note saved` when no schedule tag matches — never invented topics) with an **Undo** countdown ring. Enabling **Review before sending** in Settings (`⚙`) holds every note for explicit **Send** or **Discard** (and backgrounding the app automatically holds any pending note for manual review).
+- **Private by default, opt-in sharing:** Saved notes upload to your private stream (`PUT /transcripts/{stream_id}/segments/{sequence}`). Toggling **Share this note** marks that finalized segment conference-visible (`PUT /transcripts/{stream_id}/segments/{sequence}/sharing`) so other attendees can match with it semantically without exposing your handle.
+- **Find my wavelength:** Syncs your profile (`PUT /me`), refreshes live topic graph counts and co-occurrence links (`GET /recommendations` / `GET /graph`), and queries Elasticsearch `semantic_text` vectors (`POST /matches`) using your note or interests.
+
+### 3. Wavelength Scope Tab (Standing-Wave Constellation Map)
+- Swipe right or tap **Wavelength** to view `WavelengthScope`: three concentric harmonic rings plotting topics from innermost (strongest personal match) to outer ring, dotted co-occurrence filaments, scheduled talks (diamonds), and your saved notes (orbiting aqua squares).
+- Tap any topic or talk node on the scope to open its **Space Discovery Sheet**, which explains *in words* why it is on your wavelength (never opaque match scores or unverified `"nearby"` claims), displays session time & room with an **I'm going** toggle, and provides a **Join the chat** button.
+
+### 4. Interests, Spaces & Topic/Talk Chat Rooms
+- **Interests (`InterestsScreen`):** Browse drifting topic bubbles sized by session activity (an aqua dot marks topics co-occurring with your picks), cycle pages with **More**, type custom interests, and tap **Retune my wavelength**.
+- **Spaces (`SpacesScreen`) & Chat (`RoomChatScreen`):** View **Your Topics** (with direct **Chat** pills), **Talks You're Going To** (with room and time), and **Shared Notes on Your Wavelength** (280-character excerpts from opted-in attendees). Tapping **Join the chat** or **Chat** enters `topic:<name>` or `talk:<id>` (`GET` / `POST /rooms/{room}/messages`).
+
+---
+
+## Dynamic sessions
+
+Built from a conference organizer's feedback today: when enough people care about a topic right now, the conference gives it a room from space the organizers set aside for live-decided sessions.
+
+Every five minutes, a Kubernetes job counts how many distinct attendees shared a note on each topic in the last 30 minutes (**only shared notes count; private notes are never read**). A topic triggers at **50 people**, or at **5% of attendees with a profile** (with a floor of 3 people). The backend proposes a discussion session and books the earliest free room that organizers designated for dynamic sessions and that fits the group, at least 15 minutes ahead and within four hours; if no room is free yet, the proposal waits and retries on later runs.
+
+Attendees who shared a note on the topic or carry it on their profile receive an alert on `GET /feed` (for example, *"Kubernetes Autoscaling Discussion starts at 3:30 PM in Dynamic Room A."*), and scheduled sessions are listed by `GET /dynamic-sessions`. Organizers control which rooms are eligible and whether booking is automatic, and with an admin token can run a dry run or approve a waiting proposal into a room; `GET /rooms` also lists active chat rooms, busiest first, and flags rooms with high distinct-person activity. Dynamic sessions can be demonstrated with seeded data.
+
+### Status
+
+- The routes and CronJob are deployed. The job does nothing until someone creates the `dynamic_sessions` index and adds designated rooms in Kibana; [docs/dynamic-sessions.md](docs/dynamic-sessions.md) has the steps.
+- The mobile app does not show dynamic sessions or alerts yet.
+- Organizers are not sent a message; they see activity through the admin dry run, the job's log in Radar, and the traces in Dash0.
+- It does not pick a person to lead the session.
+
+Full specification and setup guide: [docs/dynamic-sessions.md](docs/dynamic-sessions.md).
+
+---
+
+## Prerequisites & Building from Source (Flutter Mobile App)
+
+### Prerequisites
+
+- Install the [Flutter SDK](https://docs.flutter.dev/install) (includes Dart) and add its `bin` directory to `PATH`.
+- **Android:** Follow the [Android tooling setup](https://docs.flutter.dev/platform-integration/android/setup) (Android Studio, SDK Command-line Tools, API 24+, NDK `29.0.13113456`, and CMake `3.22.1` for native `whisper_ggml` compilation).
+- **iOS:** Use a Mac with [Xcode and the iOS tooling](https://docs.flutter.dev/platform-integration/ios/setup) (deployment target iOS 15.6+; an Apple Silicon Mac can also test on the iOS Simulator or Android Studio's ARM64 Android Emulator).
+- Install Git, `curl` (`curl.exe` on Windows), and PowerShell (`powershell` on Windows or `pwsh` on macOS/Linux) if using `scripts/download-model.ps1`.
+
+Validate your Flutter toolchain:
 
 ```powershell
 flutter doctor --android-licenses
@@ -20,70 +81,124 @@ flutter doctor -v
 flutter devices
 ```
 
-## Run the MVP
+*(If Flutter is not on `PATH` on Windows, invoke `& 'C:\Users\Char\flutter\bin\flutter.bat'` instead of `flutter`.)*
 
-After downloading the model below, run:
+### 1. Download the Offline Speech Model
 
-```powershell
-flutter pub get
-flutter run -d <device-id>
-```
+We bundle **Whisper `base.en` (`Q5_1` quantization)** in `whisper.cpp` GGML format (`59,721,011` bytes / ~57 MB). Model weights are excluded from Git (`.gitignore` ignores `/assets/models/*.bin`) and verified by byte size and SHA-256 both at download time and before first on-device load.
 
-If Flutter is not on PATH on this machine, use `& 'C:\Users\Char\flutter\bin\flutter.bat'` instead of `flutter`.
-
-Android requires API 24 or newer. Install Android SDK Command-line Tools in Android Studio's SDK Manager and run `flutter doctor --android-licenses` if doctor reports them missing. Native Whisper also requires NDK `29.0.13113456` and CMake `3.22.1` (Gradle may install them when SDK licenses are accepted). Use a physical ARM64 phone to evaluate speed and memory usage. For a debug APK: `flutter build apk --debug --target-platform android-arm64`.
-
-iOS requires macOS/Xcode and deployment target 15.6 or newer. iOS builds have not been validated on this Windows machine. This MVP targets Android and iOS, not web.
-
-The top blob starts microphone capture and on-device Whisper transcription; tap again to stop. Permission denial, model preparation, recording, and finalization have visible states. Recording stops after three minutes or when the app goes into the background. Live transcript events replace the full displayed text, rather than appending duplicate partial results. English is the current transcription language.
-
-The bottom blob opens typed-interest search. Submitting 2–120 characters calls `GET /querysession?topic=...` on `https://grindset.cnh.radarhq.io`. The screen shows loading, results, no matches, or a retryable error. This search still uses a synthetic demo conversation; attendee matching is not implemented. Audio is streamed in memory and stays on the phone. Only record with participants' permission.
-
-### Realtime transcript saving
-
-Tap **Enable realtime saving**, choose a device handle and conference (default `cnh`), and explicitly agree to transcript uploads. The app claims an attendee with `PUT /me` and keeps the returned token, random stream ID, next sequence and pending text in platform secure storage. No database credentials or service token belong in Flutter. This device owns one stream; its profile is separate from profiles created on another device. A lost profile-creation response can leave the handle claimed without a usable token; choose a new handle in that case.
-
-While recording, the latest complete text snapshot is checkpointed and uploaded around every two seconds. One request stays in flight, with newer text coalesced locally. Stopping sends a final revision immediately after any earlier pending request is acknowledged. Retries reuse the exact request; an acknowledgement means the backend accepted the Elasticsearch write. **Saved transcripts** reads ordered history from the backend, including partial recordings. Private transcripts are not published to demo search, attendee search, moments or the graph.
-
-The outbox holds at most eight pending recordings with 20,000 characters per segment. Recording stops near the text limit or after three minutes. Offline recordings remain encrypted on the device; after five failed attempts, use **Retry sync** or resume the app to try again. Conflicts and expired segments stop automatic uploads and retain pending text; they are never overwritten by blindly increasing a revision. **Renew session** refreshes an existing attendee profile using its token. It cannot recover a deleted profile or a lost token. Disabling realtime saving pauses queued uploads and makes new recordings local only. Turning it back on resumes the previously consented queue; it does not upload recordings made while saving was disabled.
-
-Saved history expires from API access after seven days; this is not a physical deletion guarantee. Finalized, acknowledged text is cleared from the local outbox. A normal background transition stops transcription and saves the final snapshot; the OS does not guarantee background network execution, so pending uploads resume when the app opens. Abrupt termination can lose text produced since the last durable checkpoint. Keep the app open if a secure-storage error is shown. Clearing app data or losing the secure token loses access to this device's history. Changing `API_BASE_URL` does not send saved credentials to the new server.
-
-The Android app disables backups for secure-storage compatibility. iOS signing configurations include Keychain entitlements; native iOS validation still requires macOS/Xcode. The API contract is in [docs/transcript-api.md](docs/transcript-api.md).
-
-For an opt-in end-to-end check on an Android device: `flutter run -d <device-id> -t test_driver/transcript_smoke.dart --no-resident`. This creates one synthetic attendee and two tiny transcripts, verifies a partial before finalization, then verifies finalization, secure-session restoration, append order and history. It uses a separate local storage key, deletes that key afterward, and prints only `TRANSCRIPT_SMOKE PASS` or `FAIL`. It does not record audio or access real attendee text. The synthetic server records expire under the backend retention policy. Restore the normal app afterward with `flutter run -d <device-id> -t lib/main.dart --no-resident`.
-
-Override the backend origin for another HTTPS environment with `flutter run --dart-define=API_BASE_URL=https://your-api.example`. Use an HTTPS origin without a path, query, or credentials. Never put an Elasticsearch API key in a Flutter build. Search uses the backend response `{"conversations":[{"id":"...","conference":"...","transcript":"..."}]}`; the backend owns embedding and access control. Native Android includes the Internet permission; iOS uses HTTPS without transport-security exceptions.
-
-The model is bundled as a Flutter asset and copied into app-private storage on first recording. This adds roughly 57 MB to the app assets and another 57 MB to app storage; first-use copying and inference require additional RAM. Real-time performance with this large model must be measured on target phones.
-
-Validation commands: `flutter analyze` and `flutter test`. API and widget tests cover query encoding, validation, response parsing, network failures, loading, duplicate-submit prevention, results, empty results, retries, leaving during a request, microphone permission recovery, and narrow layouts with enlarged text. They do not validate native speech recognition.
-
-The first Android debug build stopped because the license for Whisper's NDK `29.0.13113456` has not been accepted. In Android Studio, open SDK Manager > SDK Tools, enable Show Package Details, and install that NDK version after reviewing its license. Then retry the build. No APK or on-device transcription run has been verified yet.
-
-## Download the offline speech model
-
-We use **Whisper base.en, Q5_1 quantization**, in whisper.cpp's GGML format. Model weights are downloaded separately and excluded from Git: cloning this repository does **not** download them. Git LFS is not required.
-
-From the repository root, run:
+**Windows (PowerShell):**
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\download-model.ps1
 ```
 
-On macOS or Linux with PowerShell installed, run `pwsh -NoProfile -File ./scripts/download-model.ps1`.
+**macOS / Linux (with PowerShell `pwsh`):**
 
-The script downloads approximately **57 MB** to `assets/models/ggml-base.en-q5_1.bin`, verifies its SHA-256 checksum, and skips downloading an existing verified copy. Allow enough free space for the model and a temporary download. If a download fails, rerun the command.
+```bash
+pwsh -NoProfile -File ./scripts/download-model.ps1
+```
 
-The model is included by `pubspec.yaml` and loaded through `whisper_ggml` 2.9.0. Download it before building or running tests. It remains excluded from Git; contributors and CI fetch it separately.
+**macOS / Linux (`curl` fallback without PowerShell):**
 
-### Model provenance
+```bash
+mkdir -p assets/models
+curl -L --fail --retry 3 \
+  -o assets/models/ggml-base.en-q5_1.bin \
+  "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en-q5_1.bin?download=true"
+echo "4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f  assets/models/ggml-base.en-q5_1.bin" | sha256sum -c -
+```
 
-- Original model: [openai/whisper-base.en](https://huggingface.co/openai/whisper-base.en)
-- Converted weights: [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp)
-- Pinned revision: `5359861c739e955e79d9a303bcbc70fb988958b1`
-- File: `ggml-base.en-q5_1.bin`
-- Size: `59721011` bytes
-- SHA-256: `4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f`
+*(On macOS, use `shasum -a 256 -c -` instead of `sha256sum -c -`.)*
 
-The model is MIT licensed; retain the applicable license and notices when redistributing it. See the [upstream model license](https://huggingface.co/openai/whisper-large-v3-turbo) and [whisper.cpp license](https://github.com/ggml-org/whisper.cpp/blob/master/LICENSE).
+#### Model Provenance
+
+- **Original model:** [openai/whisper-base.en](https://huggingface.co/openai/whisper-base.en) (MIT License)
+- **Converted weights:** [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp) ([whisper.cpp LICENSE](https://github.com/ggml-org/whisper.cpp/blob/master/LICENSE))
+- **Pinned revision:** `5359861c739e955e79d9a303bcbc70fb988958b1`
+- **File:** `assets/models/ggml-base.en-q5_1.bin`
+- **Size:** `59721011` bytes (~57 MB)
+- **SHA-256:** `4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f`
+
+### 2. Run & Build the App
+
+```bash
+flutter pub get
+flutter run -d <device-id>
+```
+
+To build a standalone ARM64 Android release APK for physical phones:
+
+```bash
+flutter build apk --release --target-platform android-arm64
+```
+
+To build an `x86_64` debug APK for desktop Android emulators:
+
+```bash
+flutter build apk --debug --target-platform android-x64
+```
+
+To point the app at a custom HTTPS backend origin (never pass Elasticsearch keys or service tokens into Flutter):
+
+```bash
+flutter run --dart-define=API_BASE_URL=https://your-api.example
+```
+
+### 3. Validate & Smoke-Test
+
+```bash
+flutter analyze
+flutter test
+```
+
+For an opt-in end-to-end private transcript sync check on a connected Android device (uses an isolated storage key, cleans up afterward, and prints `TRANSCRIPT_SMOKE PASS` or `FAIL`):
+
+```bash
+flutter run -d <device-id> -t test_driver/transcript_smoke.dart --no-resident
+flutter run -d <device-id> -t lib/main.dart --no-resident
+```
+
+### Realtime Transcript Saving Details
+
+Opening **Settings (`⚙`) → Saved transcripts** (or using `CloudSyncPanel`) gives access to ordered private transcript history (`GET /transcripts/{stream_id}`) and session renewal. Durable outbox persistence holds up to 8 pending segments (up to 20,000 characters per segment) in `FlutterSecureStorage` with idempotent revision compare-and-set retries, 7-day server TTL expiry, and background pause safety. Android backups are disabled (`android:allowBackup="false"`) and iOS Keychain entitlements are configured for secure credential storage.
+
+---
+
+## Backend, Elasticsearch & Kubernetes Deployment
+
+The backend (`backend/` FastAPI service) runs in Kubernetes namespace `team-grindset` on the Cloud Native Hackathon `grindset` cluster (`https://grindset.cnh.radarhq.io`), deployed via GitHub Actions (`.github/workflows/build-and-deploy.yml`) and Argo CD (`argocd/application.yaml` + `deploy/`).
+
+### Local Backend & Elasticsearch Setup
+
+1. **Environment variables:** Copy `.env.example` to `.env` (gitignored) on the server/workstation and configure `ELASTICSEARCH_URL` and `ELASTICSEARCH_API_KEY` (keep all Elastic credentials strictly server-side).
+2. **Initialize & verify indices (`.jina-embeddings-v5-text-small`, 1024-dim `semantic_text`):**
+   ```bash
+   node --env-file-if-exists=.env scripts/elastic.mjs setup
+   node --env-file-if-exists=.env scripts/elastic.mjs status
+   node --test server/elastic/store.test.mjs
+   ```
+   Or run `docs/elastic-setup.http` in Kibana Dev Tools.
+3. **Optional live index mappings (`backend/mappings/`):**
+   - Display names on `people`: apply `backend/mappings/people-display-name.json` (`PUT people/_mapping` in Kibana Dev Tools). Until applied, the Flutter app automatically retries `PUT /me` without `display_name` on `422`/`503` so onboarding never blocks.
+   - Opt-in geospatial presence: apply `backend/mappings/attendee-locations.json` (`PUT /attendee-locations`) and `backend/mappings/conversation-presence.json` (see [docs/geospatial.md](docs/geospatial.md)).
+4. **Python backend tests:**
+   ```bash
+   pytest backend/tests
+   ```
+
+### Architecture & API Reference (`docs/`)
+
+- [Architecture Outline](docs/architecture.md)
+- [Attendee API (`PUT/GET /me`, `/graph`, `/search`, `/rooms`, `/matches`)](docs/attendee-api.md)
+- [Realtime Transcript & Sharing API (`/transcripts`)](docs/transcript-api.md)
+- [Elasticsearch Schema & Setup](docs/elasticsearch.md)
+- [Dynamic Trending Sessions](docs/dynamic-sessions.md)
+- [Geospatial Conversation Presence](docs/geospatial.md)
+- [Vector Backend Contract](docs/vector-backend.md)
+
+---
+
+## AI Tools Disclosure
+
+Built at the **Cloud Native Hackathon / WeMakeDevs Jam SLC 2026** with assistance from **Claude Code (Anthropic Claude)**, **Antigravity (Google Gemini)**, and **OpenAI Codex**.
