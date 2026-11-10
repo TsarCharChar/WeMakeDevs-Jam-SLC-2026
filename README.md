@@ -33,7 +33,7 @@ Download `ConFellow-demo-arm64.apk` (`137 MB`, includes the quantized offline Wh
 - **Typed notes:** Tap **Type a note** to type or paste text (text is the only supported input format; there are no file uploads).
 - **Undo & Review before sending:** Finishing a note immediately previews matched KubeCon schedule tags (`Tuned: Cilium · Observability`, or `Note saved` when no schedule tag matches — never invented topics) with an **Undo** countdown ring. Enabling **Review before sending** in Settings (`⚙`) holds every note for explicit **Send** or **Discard** (and backgrounding the app automatically holds any pending note for manual review).
 - **Private by default, opt-in sharing:** Saved notes upload to your private stream (`PUT /transcripts/{stream_id}/segments/{sequence}`). Toggling **Share this note** marks that finalized segment conference-visible (`PUT /transcripts/{stream_id}/segments/{sequence}/sharing`) so other attendees can match with it semantically without exposing your handle.
-- **Find my wavelength:** Syncs your profile (`PUT /me`), refreshes live topic graph counts and co-occurrence links (`GET /recommendations` / `GET /graph`), and queries Elasticsearch `semantic_text` vectors (`POST /matches`) using your note or interests.
+- **Find my wavelength:** Syncs your profile (`PUT /me`), refreshes live topic graph counts and co-occurrence links (`GET /graph`), and queries Elasticsearch `semantic_text` vectors (`POST /matches`) using your note or interests.
 
 ### 3. Wavelength Scope Tab (Standing-Wave Constellation Map)
 - Swipe right or tap **Wavelength** to view `WavelengthScope`: three concentric harmonic rings plotting topics from innermost (strongest personal match) to outer ring, dotted co-occurrence filaments, scheduled talks (diamonds), and your saved notes (orbiting aqua squares).
@@ -69,7 +69,7 @@ Full specification and setup guide: [docs/dynamic-sessions.md](docs/dynamic-sess
 ### Prerequisites
 
 - Install the [Flutter SDK](https://docs.flutter.dev/install) (includes Dart) and add its `bin` directory to `PATH`.
-- **Android:** Follow the [Android tooling setup](https://docs.flutter.dev/platform-integration/android/setup) (Android Studio, SDK Command-line Tools, API 24+, NDK `29.0.13113456`, and CMake `3.22.1` for native `whisper_ggml` compilation).
+- **Android:** Follow the [Android tooling setup](https://docs.flutter.dev/platform-integration/android/setup) (Android Studio, SDK Command-line Tools, API 24+, NDK `29.0.14206865`, and CMake `3.22.1` for native `whisper_ggml` compilation).
 - **iOS:** Use a Mac with [Xcode and the iOS tooling](https://docs.flutter.dev/platform-integration/ios/setup) (deployment target iOS 15.6+; an Apple Silicon Mac can also test on the iOS Simulator or Android Studio's ARM64 Android Emulator).
 - Install Git, `curl` (`curl.exe` on Windows), and PowerShell (`powershell` on Windows or `pwsh` on macOS/Linux) if using `scripts/download-model.ps1`.
 
@@ -167,7 +167,7 @@ Opening **Settings (`⚙`) → Saved transcripts** (or using `CloudSyncPanel`) g
 
 ## Backend, Elasticsearch & Kubernetes Deployment
 
-The backend (`backend/` FastAPI service) runs in Kubernetes namespace `team-grindset` on the Cloud Native Hackathon `grindset` cluster (`https://grindset.cnh.radarhq.io`), deployed via GitHub Actions (`.github/workflows/build-and-deploy.yml`) and Argo CD (`argocd/application.yaml` + `deploy/`).
+The backend (`backend/` FastAPI service) runs in Kubernetes namespace `team-grindset` on the Cloud Native Hackathon `grindset` cluster (`https://grindset.cnh.radarhq.io`), deployed via GitHub Actions (`.github/workflows/deploy.yaml`) and Argo CD (`argocd/application.yaml` + `deploy/`).
 
 ### Local Backend & Elasticsearch Setup
 
