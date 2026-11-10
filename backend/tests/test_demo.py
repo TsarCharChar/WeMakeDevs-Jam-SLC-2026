@@ -12,3 +12,5 @@ def test_web_preview_and_schedule_are_served():
         schedule = client.get("/demo/schedule.json")
         assert schedule.status_code == 200
         assert schedule.json()[0]["title"]
+        bare = client.get("/demo", follow_redirects=False)
+        assert bare.headers["location"] == "/demo/"

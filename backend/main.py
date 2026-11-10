@@ -7,7 +7,7 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.attendee import router as attendee_router
@@ -131,6 +131,11 @@ def create_app(settings: Settings | None = None, store: VectorStore | None = Non
     app.include_router(dynamic_sessions_router)
 
     # Web preview of the phone app for visitors without Android, on the same origin as the API.
+    # A path-only redirect keeps https; the mount's own redirect builds an http:// URL behind the TLS proxy.
+    @app.get("/demo", include_in_schema=False)
+    def demo_redirect():
+        return RedirectResponse("/demo/")
+
     @app.get("/demo/schedule.json", include_in_schema=False)
     def demo_schedule():
         return FileResponse(SCHEDULE, media_type="application/json")
