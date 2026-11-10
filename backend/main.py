@@ -2,11 +2,13 @@ import asyncio
 import hmac
 import os
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.attendee import router as attendee_router
 from backend.config import Settings
@@ -21,6 +23,10 @@ from backend.models import (
 )
 from backend.session_search import router as session_search_router
 from backend.vector_store import StoreError, VectorStore, create_client
+
+DEMO = Path(__file__).parent / "demo"
+# The phone app's bundled schedule; the Dockerfile copies it to the same relative place.
+SCHEDULE = Path(__file__).parent.parent / "assets" / "data" / "kubecon_schedule.json"
 
 
 def create_app(settings: Settings | None = None, store: VectorStore | None = None):
@@ -123,6 +129,13 @@ def create_app(settings: Settings | None = None, store: VectorStore | None = Non
     app.include_router(session_search_router)
     app.include_router(attendee_router)
     app.include_router(dynamic_sessions_router)
+
+    # Web preview of the phone app for visitors without Android, on the same origin as the API.
+    @app.get("/demo/schedule.json", include_in_schema=False)
+    def demo_schedule():
+        return FileResponse(SCHEDULE, media_type="application/json")
+
+    app.mount("/demo", StaticFiles(directory=DEMO, html=True), name="demo")
 
     return app
 
